@@ -1,112 +1,98 @@
-/*  Frikik Ustası — Pro game.js (Boş ekranı engelleyen sağlam sürüm)
-    Uyumlu HTML id'leri:
-    canvas#c, #score, #lives, #streak, #level, #resetBtn
+/*  Frikik Ustası — PRO (Kaleye kesin giden fizik + FIFA hissi + Replay)
+    Uyumlu id'ler:
+      canvas#c, #score, #lives, #streak, #level, #resetBtn
 */
 
 (() => {
-  // -------------------- Safe boot helpers --------------------
+  // ---------- DOM ----------
   const $ = (id) => document.getElementById(id);
-
   const canvas = $("c");
+  if (!canvas) { alert("canvas id='c' bulunamadı"); return; }
+  const ctx = canvas.getContext("2d", { alpha: false });
+
   const scoreEl = $("score");
   const livesEl = $("lives");
   const streakEl = $("streak");
   const levelEl = $("level");
   const resetBtn = $("resetBtn");
 
-  if (!canvas) {
-    alert("Hata: canvas#c bulunamadı. index.html içinde <canvas id='c'> olmalı.");
-    return;
-  }
+  // ---------- Helpers ----------
+  const W = canvas.width, H = canvas.height;
+  const clamp = (v,a,b) => Math.max(a, Math.min(b, v));
+  const lerp  = (a,b,t) => a + (b-a)*t;
+  const hypot = Math.hypot;
+  const rand  = (a,b) => a + Math.random()*(b-a);
 
-  const ctx = canvas.getContext("2d", { alpha: false });
-
-  function showFatal(err) {
+  function fatal(err){
     console.error(err);
-    const msg = (err && err.stack) ? err.stack : String(err);
-
-    // draw red overlay on canvas
-    try {
-      ctx.save();
-      ctx.fillStyle = "#111";
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-      ctx.fillStyle = "#c00";
-      ctx.fillRect(0, 0, canvas.width, 80);
-      ctx.fillStyle = "#fff";
-      ctx.font = "bold 16px Arial";
-      ctx.fillText("game.js hata verdi (boş ekran olmaz):", 12, 28);
-      ctx.font = "12px Arial";
-      wrapText(msg, 12, 54, canvas.width - 24, 14);
-      ctx.restore();
-    } catch {}
+    ctx.fillStyle = "#111"; ctx.fillRect(0,0,W,H);
+    ctx.fillStyle = "#b00"; ctx.fillRect(0,0,W,90);
+    ctx.fillStyle = "#fff"; ctx.font = "bold 16px Arial";
+    ctx.fillText("game.js hata:", 12, 28);
+    ctx.font = "12px Arial";
+    const msg = (err?.stack || String(err)).slice(0, 600);
+    wrap(msg, 12, 50, W-24, 14);
   }
-
-  function wrapText(text, x, y, maxWidth, lineHeight) {
+  function wrap(text, x, y, maxW, lh){
     const words = String(text).split(/\s+/);
     let line = "";
-    for (let n = 0; n < words.length; n++) {
-      const test = line + words[n] + " ";
-      const w = ctx.measureText(test).width;
-      if (w > maxWidth && n > 0) {
-        ctx.fillText(line, x, y);
-        line = words[n] + " ";
-        y += lineHeight;
-        if (y > canvas.height - 10) return;
-      } else {
-        line = test;
-      }
+    for(let i=0;i<words.length;i++){
+      const t = line + words[i] + " ";
+      if(ctx.measureText(t).width > maxW && i>0){
+        ctx.fillText(line, x, y); line = words[i] + " "; y += lh;
+        if(y > H-10) return;
+      } else line = t;
     }
     ctx.fillText(line, x, y);
   }
 
-  // -------------------- Math utils --------------------
-  const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
-  const lerp = (a, b, t) => a + (b - a) * t;
-  const rand = (a, b) => a + Math.random() * (b - a);
-  const hypot = Math.hypot;
+  // ---------- World ----------
+  const goal = { x: W/2, y: 92, w: 296, h: 76 };
+  const mouth = { x: goal.x-goal.w/2, y: goal.y, w: goal.w, h: goal.h };
 
-  // -------------------- Game constants --------------------
-  const W = canvas.width;
-  const H = canvas.height;
+  const ballStart = { x: W/2, y: H-130 };
 
-  const goal = { x: W / 2, y: 90, w: 290, h: 78 };
-  const mouth = { x: goal.x - goal.w / 2, y: goal.y, w: goal.w, h: goal.h };
+  let score=0, lives=5, streak=0, level=1;
 
-  const ballStart = { x: W / 2, y: H - 130 };
+  // “FIFA” hissi: kamera
+  const cam = { zoom: 1, targetZoom: 1, shake: 0, sx: 0, sy: 0 };
 
-  // Target zones (for “pro feel” + scoring variety)
-  const zones = [
-    { name: "Sol Üst",  x: mouth.x + 35,              y: mouth.y + 12, w: 60, h: 40, mult: 2 },
-    { name: "Sağ Üst",  x: mouth.x + mouth.w - 95,    y: mouth.y + 12, w: 60, h: 40, mult: 2 },
-    { name: "Orta",     x: mouth.x + mouth.w/2 - 35,  y: mouth.y + 18, w: 70, h: 45, mult: 1 },
-  ];
+  // Mesaj/overlay
+  const overlay = { text:"", t:0 };
 
-  // -------------------- State --------------------
-  let score = 0, lives = 5, streak = 0, level = 1;
+  // Net & particles
+  let netShake = 0;
+  const particles = [];
+
+  // Replay buffer
+  let replayMode = false;
+  let replayT = 0;
+  let replayFrames = []; // {x,y,rot}
+  const REPLAY_MAX = 140; // ~2.3 sn @60fps
+
+  const wall = {
+    active: true,
+    x: W/2,
+    y: mouth.y + 145,
+    cols: 4,
+    spacing: 28,
+    w: 16,
+    h: 52,
+    sway: 0,
+    swayDir: 1
+  };
 
   const keeper = {
-    x: W / 2,
+    x: W/2,
     y: mouth.y + 30,
-    w: 78,
+    w: 80,
     h: 26,
     baseSpeed: 2.4,
     speed: 2.4,
     dir: 1,
     mode: "patrol", // patrol | dive | recover
     diveT: 0,
-    diveVX: 0,
-  };
-
-  const wall = {
-    active: true,
-    x: W / 2,
-    y: mouth.y + 140,
-    cols: 4,
-    spacing: 28,
-    w: 16,
-    h: 50,
-    sway: 0,
-    swayDir: 1,
+    diveVX: 0
   };
 
   const ball = {
@@ -115,52 +101,36 @@
     r: 16,
     vx: 0,
     vy: 0,
-    spin: 0,     // falso
+    spin: 0,
     rot: 0,
     inFlight: false
   };
 
-  const drag = { active: false, sx: 0, sy: 0, cx: 0, cy: 0 };
+  // Drag aiming
+  const drag = { active:false, sx:0, sy:0, cx:0, cy:0 };
 
-  const fx = {
-    msg: "",
-    msgT: 0,
-    netShake: 0,
-    camShake: 0,
-    particles: []
-  };
+  // ---------- HUD ----------
+  function syncHud(){
+    scoreEl && (scoreEl.textContent = String(score));
+    livesEl && (livesEl.textContent = String(lives));
+    streakEl && (streakEl.textContent = String(streak));
+    levelEl && (levelEl.textContent = String(level));
+  }
+  function say(t){ overlay.text = t; overlay.t = 120; }
 
-  let tick = 0;
-  let freeze = 0;
-
-  // -------------------- HUD --------------------
-  function syncHud() {
-    if (scoreEl) scoreEl.textContent = String(score);
-    if (livesEl) livesEl.textContent = String(lives);
-    if (streakEl) streakEl.textContent = String(streak);
-    if (levelEl) levelEl.textContent = String(level);
+  function updateDifficulty(){
+    level = 1 + Math.floor(score/5);
+    keeper.speed = keeper.baseSpeed + Math.min(4.0, level*0.35);
+    const chance = clamp(0.65 + level*0.02, 0.65, 0.85);
+    wall.active = Math.random() < chance;
   }
 
-  function say(text) {
-    fx.msg = text;
-    fx.msgT = 120;
-  }
-
-  function updateDifficulty() {
-    level = 1 + Math.floor(score / 5);
-    keeper.speed = keeper.baseSpeed + Math.min(4.0, level * 0.35);
-
-    // Wall chance: early levels more frequent, later still mixed
-    const wallChance = clamp(0.65 + level * 0.02, 0.65, 0.85);
-    wall.active = Math.random() < wallChance;
-  }
-
-  // -------------------- Reset --------------------
-  function resetShot() {
-    ball.x = ballStart.x;
-    ball.y = ballStart.y;
+  // ---------- Reset ----------
+  function resetShot(){
+    ball.x = ballStart.x; ball.y = ballStart.y;
     ball.vx = 0; ball.vy = 0; ball.spin = 0; ball.rot = 0;
     ball.inFlight = false;
+
     drag.active = false;
 
     keeper.x = W/2;
@@ -170,279 +140,317 @@
 
     wall.sway = 0; wall.swayDir = 1;
 
+    replayFrames = [];
+    replayMode = false;
+    replayT = 0;
+
     updateDifficulty();
     syncHud();
+    cam.targetZoom = 1;
   }
 
-  function resetGame() {
-    score = 0; lives = 5; streak = 0; level = 1;
-    fx.particles.length = 0;
-    fx.netShake = 0; fx.camShake = 0;
-    fx.msg = ""; fx.msgT = 0;
+  function resetGame(){
+    score=0; lives=5; streak=0; level=1;
+    particles.length = 0;
+    netShake = 0;
+    overlay.text=""; overlay.t=0;
+    cam.zoom=1; cam.targetZoom=1; cam.shake=0;
     resetShot();
   }
+  resetBtn && resetBtn.addEventListener("click", resetGame);
 
-  if (resetBtn) resetBtn.addEventListener("click", resetGame);
-
-  // -------------------- Collisions --------------------
-  function circleRectHit(cx, cy, cr, rx, ry, rw, rh) {
-    const px = clamp(cx, rx, rx + rw);
-    const py = clamp(cy, ry, ry + rh);
+  // ---------- Collisions ----------
+  function circleRectHit(cx, cy, cr, rx, ry, rw, rh){
+    const px = clamp(cx, rx, rx+rw);
+    const py = clamp(cy, ry, ry+rh);
     const dx = cx - px, dy = cy - py;
-    return (dx * dx + dy * dy) <= cr * cr;
+    return dx*dx + dy*dy <= cr*cr;
   }
 
-  function rectContains(r, x, y) {
-    return x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h;
+  function getWallRects(){
+    if(!wall.active) return [];
+    wall.sway += 0.02 * wall.swayDir * (1 + level*0.12);
+    if(Math.abs(wall.sway) > 0.35) wall.swayDir *= -1;
+
+    const rects = [];
+    const total = (wall.cols-1)*wall.spacing;
+    const startX = wall.x - total/2;
+    for(let i=0;i<wall.cols;i++){
+      const x = startX + i*wall.spacing + Math.sin(tick*0.02 + i)*2;
+      const y = wall.y + Math.cos(tick*0.03 + i)*1.5;
+      rects.push({ x: x-wall.w/2, y: y-wall.h/2, w: wall.w, h: wall.h });
+    }
+    return rects;
   }
 
-  // -------------------- Particles --------------------
-  function spawnParticles(x, y, n = 22) {
-    for (let i = 0; i < n; i++) {
-      fx.particles.push({
-        x, y,
-        vx: rand(-3.6, 3.6),
-        vy: rand(-3.6, 3.6),
-        life: rand(28, 55)
+  // ---------- Particles ----------
+  function spawnParticles(x,y,n=24){
+    for(let i=0;i<n;i++){
+      particles.push({
+        x,y,
+        vx: rand(-3.6,3.6),
+        vy: rand(-3.6,3.6),
+        life: rand(28,58)
       });
     }
   }
-
-  function stepParticles() {
-    for (let i = fx.particles.length - 1; i >= 0; i--) {
-      const p = fx.particles[i];
-      p.x += p.vx;
-      p.y += p.vy;
+  function stepParticles(){
+    for(let i=particles.length-1;i>=0;i--){
+      const p = particles[i];
+      p.x += p.vx; p.y += p.vy;
       p.vy += 0.07;
-      p.vx *= 0.98;
-      p.vy *= 0.98;
+      p.vx *= 0.98; p.vy *= 0.98;
       p.life -= 1;
-      if (p.life <= 0) fx.particles.splice(i, 1);
+      if(p.life <= 0) particles.splice(i,1);
     }
   }
 
-  // -------------------- Keeper AI --------------------
-  function planDive() {
-    // Rough predict x at goal line
+  // ---------- Keeper AI ----------
+  function planDive(){
+    // Basit tahmin: topun kale çizgisine yaklaştığı x
     let tx = ball.x, ty = ball.y;
-    let tvx = ball.vx, tvy = ball.vy, tspin = ball.spin;
+    let tvx = ball.vx, tvy = ball.vy, tsp = ball.spin;
 
-    for (let i = 0; i < 46; i++) {
-      tvx += tspin * 0.08;
-      tspin *= 0.994;
-      tvx *= 0.992; tvy *= 0.992;
+    for(let i=0;i<50;i++){
+      tvx += tsp * 0.08;
+      tsp *= 0.995;
+
+      // drag (hafif)
+      tvx *= 0.996;
+      tvy *= 0.996;
+
       tx += tvx; ty += tvy;
-      tvy += 0.11;
-      if (ty <= mouth.y + mouth.h + 6) break;
+
+      // gravity (daha düşük -> KALEYE GİDER)
+      tvy += 0.075;
+
+      if(ty <= mouth.y + mouth.h + 10) break;
     }
 
-    const left = mouth.x + keeper.w / 2;
-    const right = mouth.x + mouth.w - keeper.w / 2;
+    const left = mouth.x + keeper.w/2;
+    const right = mouth.x + mouth.w - keeper.w/2;
     const targetX = clamp(tx, left, right);
 
-    const likelyIn = (tx > mouth.x - 20 && tx < mouth.x + mouth.w + 20);
-    const diveChance = clamp(0.45 + level * 0.06, 0.45, 0.82);
+    const likelyIn = (tx > mouth.x-25 && tx < mouth.x + mouth.w + 25);
+    const diveChance = clamp(0.45 + level*0.06, 0.45, 0.82);
 
-    keeper.mode = "patrol";
-    keeper.diveT = 0;
-    keeper.diveVX = 0;
+    keeper.mode="patrol";
+    keeper.diveT=0;
+    keeper.diveVX=0;
 
-    if (likelyIn && Math.random() < diveChance) {
-      keeper.mode = "dive";
+    if(likelyIn && Math.random() < diveChance){
+      keeper.mode="dive";
       keeper.diveT = 22;
-      keeper.diveVX = clamp((targetX - keeper.x) * 0.10, -9, 9);
+      keeper.diveVX = clamp((targetX - keeper.x) * 0.10, -9.2, 9.2);
     }
   }
 
-  function stepKeeper() {
-    const left = mouth.x + keeper.w / 2;
-    const right = mouth.x + mouth.w - keeper.w / 2;
+  function stepKeeper(){
+    const left = mouth.x + keeper.w/2;
+    const right = mouth.x + mouth.w - keeper.w/2;
 
-    if (keeper.mode === "dive") {
+    if(keeper.mode === "dive"){
       keeper.x += keeper.diveVX;
       keeper.diveT--;
-      if (keeper.diveT <= 0) {
-        keeper.mode = "recover";
-        keeper.diveT = 18;
+      if(keeper.diveT <= 0){
+        keeper.mode="recover";
+        keeper.diveT=18;
       }
-    } else if (keeper.mode === "recover") {
+    } else if(keeper.mode === "recover"){
       keeper.x = lerp(keeper.x, W/2, 0.08);
       keeper.diveT--;
-      if (keeper.diveT <= 0) keeper.mode = "patrol";
+      if(keeper.diveT <= 0) keeper.mode="patrol";
     } else {
       keeper.x += keeper.speed * keeper.dir;
-      if (keeper.x < left) { keeper.x = left; keeper.dir = 1; }
-      if (keeper.x > right) { keeper.x = right; keeper.dir = -1; }
+      if(keeper.x < left){ keeper.x = left; keeper.dir = 1; }
+      if(keeper.x > right){ keeper.x = right; keeper.dir = -1; }
     }
 
     keeper.x = clamp(keeper.x, left, right);
   }
 
-  // -------------------- Wall --------------------
-  function getWallRects() {
-    if (!wall.active) return [];
-    wall.sway += 0.02 * wall.swayDir * (1 + level * 0.12);
-    if (Math.abs(wall.sway) > 0.35) wall.swayDir *= -1;
+  // ---------- Shooting (BURASI: kaleye gitmesini garantiliyor) ----------
+  function shoot(dx, dy){
+    const mag = hypot(dx,dy);
 
-    const rects = [];
-    const total = (wall.cols - 1) * wall.spacing;
-    const startX = wall.x - total / 2;
+    // Güç: daha agresif, top kesin hız alır
+    const power = clamp(mag / 7.5, 6, 22); // <-- kritik
 
-    for (let i = 0; i < wall.cols; i++) {
-      const x = startX + i * wall.spacing + Math.sin(tick * 0.02 + i) * 2;
-      const y = wall.y + Math.cos(tick * 0.03 + i) * 1.5;
-      rects.push({ x: x - wall.w/2, y: y - wall.h/2, w: wall.w, h: wall.h });
-    }
-    return rects;
-  }
+    // Yön: drag'ın tersi
+    let vx = clamp(-dx / 16, -12, 12);
+    let vy = clamp(-dy / 13, -22, -6);
 
-  // -------------------- Shot physics --------------------
-  function shoot(dx, dy) {
-    const mag = hypot(dx, dy);
-    const power = clamp(mag / 9, 3, 16);
+    // Güç takviyesi (özellikle yukarı)
+    vy -= power * 0.55;  // <-- kritik: kaleye taşır
+    vx *= (0.92 + power * 0.02);
 
-    let vx = clamp(-dx / 24, -9.5, 9.5);
-    let vy = clamp(-dy / 20, -18, -6);
-
-    vy -= power * 0.32;
-    vx *= (0.85 + power * 0.02);
+    // Falso (spin)
+    const spin = clamp(dx / 75, -1.4, 1.4) * (0.75 + power * 0.02);
 
     ball.vx = vx;
     ball.vy = vy;
-    ball.spin = clamp(dx / 90, -1.25, 1.25) * (0.7 + power * 0.03);
+    ball.spin = spin;
     ball.inFlight = true;
+
+    // Kamera: şut anında hafif zoom
+    cam.targetZoom = 1.06;
+    cam.shake = Math.max(cam.shake, 1.8);
 
     planDive();
   }
 
-  function stepBall() {
-    if (!ball.inFlight) return;
-
-    // curve
-    ball.vx += ball.spin * 0.08;
-    ball.spin *= 0.994;
-
-    // drag
-    ball.vx *= 0.992;
-    ball.vy *= 0.992;
-
-    // move
-    ball.x += ball.vx;
-    ball.y += ball.vy;
-
-    // rotate visually
-    ball.rot += ball.vx * 0.02;
-
-    // gravity
-    ball.vy += 0.11;
-
-    // side bounds
-    if (ball.x < ball.r) { ball.x = ball.r; ball.vx *= -0.55; ball.spin *= -0.6; }
-    if (ball.x > W - ball.r) { ball.x = W - ball.r; ball.vx *= -0.55; ball.spin *= -0.6; }
-
-    // wall collision
-    if (wall.active && ball.y < wall.y + 45 && ball.y > wall.y - 70) {
-      const rects = getWallRects();
-      for (const r of rects) {
-        if (circleRectHit(ball.x, ball.y, ball.r, r.x, r.y, r.w, r.h)) {
-          ball.vy *= -0.35;
-          ball.vx *= 0.65;
-          ball.spin *= 0.6;
-          fx.camShake = Math.max(fx.camShake, 3.2);
-          spawnParticles(ball.x, ball.y, 18);
-          wall.swayDir *= -1;
-          break;
-        }
-      }
-    }
-
-    // goal-line check
-    if (ball.y <= mouth.y + mouth.h + 6) resolveShot();
-
-    // miss if falls too far
-    if (ball.y > H + 60) miss("AUT! 😬");
-  }
-
-  function resolveShot() {
-    if (!ball.inFlight) return;
+  function resolveShot(){
+    if(!ball.inFlight) return;
     ball.inFlight = false;
 
-    const keeperRect = {
+    // keeper hitbox
+    const kr = {
       x: keeper.x - keeper.w/2 - 10,
       y: keeper.y - keeper.h/2 - 4,
       w: keeper.w + 20,
       h: keeper.h + 8
     };
+    const keeperHit = circleRectHit(ball.x, ball.y, ball.r, kr.x, kr.y, kr.w, kr.h);
 
-    const keeperHit = circleRectHit(ball.x, ball.y, ball.r, keeperRect.x, keeperRect.y, keeperRect.w, keeperRect.h);
-
+    // goal bounds (toleranslı)
     const inGoal =
       ball.x >= mouth.x + 2 &&
       ball.x <= mouth.x + mouth.w - 2 &&
-      ball.y <= mouth.y + mouth.h + 6 &&
-      ball.y >= mouth.y - 18;
+      ball.y <= mouth.y + mouth.h + 14 &&
+      ball.y >= mouth.y - 26;
 
-    if (keeperHit) {
+    if(keeperHit){
       save();
       return;
     }
-
-    if (inGoal) {
+    if(inGoal){
       goalScored();
     } else {
       miss("AUT! 😬");
     }
   }
 
-  function goalScored() {
-    streak += 1;
+  function stepBall(){
+    if(!ball.inFlight) return;
 
-    // zone bonus
-    let zoneMult = 1;
-    for (const z of zones) {
-      if (rectContains(z, ball.x, ball.y)) zoneMult = Math.max(zoneMult, z.mult);
+    // Replay record
+    replayFrames.push({ x: ball.x, y: ball.y, rot: ball.rot });
+    if(replayFrames.length > REPLAY_MAX) replayFrames.shift();
+
+    // curve from spin
+    ball.vx += ball.spin * 0.085;
+    ball.spin *= 0.995;
+
+    // air drag (çok hafif)
+    ball.vx *= 0.996;
+    ball.vy *= 0.996;
+
+    // move
+    ball.x += ball.vx;
+    ball.y += ball.vy;
+
+    // rotate
+    ball.rot += ball.vx * 0.02;
+
+    // gravity (DÜŞÜRÜLDÜ -> kaleye gidiyor)
+    ball.vy += 0.075;
+
+    // side walls
+    if(ball.x < ball.r){ ball.x = ball.r; ball.vx *= -0.55; ball.spin *= -0.6; }
+    if(ball.x > W-ball.r){ ball.x = W-ball.r; ball.vx *= -0.55; ball.spin *= -0.6; }
+
+    // wall collision
+    if(wall.active && ball.y < wall.y + 55 && ball.y > wall.y - 85){
+      const rects = getWallRects();
+      for(const r of rects){
+        if(circleRectHit(ball.x, ball.y, ball.r, r.x, r.y, r.w, r.h)){
+          ball.vy *= -0.28;
+          ball.vx *= 0.70;
+          ball.spin *= 0.65;
+          spawnParticles(ball.x, ball.y, 18);
+          cam.shake = Math.max(cam.shake, 2.8);
+          wall.swayDir *= -1;
+          break;
+        }
+      }
     }
 
-    const comboBonus = (streak % 3 === 0) ? 1 : 0;
-    const levelBonus = Math.floor(level / 3);
+    // goal line resolve
+    if(ball.y <= mouth.y + mouth.h + 16){
+      resolveShot();
+      return;
+    }
 
-    score += (1 * zoneMult) + comboBonus + levelBonus;
+    // fell out
+    if(ball.y > H + 80){
+      miss("AUT! 😬");
+    }
+  }
 
-    fx.netShake = 20;
-    fx.camShake = Math.max(fx.camShake, 4.0);
-    spawnParticles(ball.x, ball.y, 28);
+  // ---------- Outcomes + Replay ----------
+  function startReplay(){
+    // 2 saniyelik tekrar
+    replayMode = true;
+    replayT = Math.min(replayFrames.length, REPLAY_MAX) - 1;
+    cam.targetZoom = 1.12;
+  }
 
-    say(zoneMult >= 2 ? "KÖŞE GOLÜ! ⚡" : (comboBonus ? "GOOOL! +BONUS ⚡" : "GOOOL! ⚽"));
-    freeze = 6;
+  function goalScored(){
+    streak += 1;
+    const combo = (streak % 3 === 0) ? 1 : 0;
+    const lvlBonus = Math.floor(level/3);
+
+    score += 1 + combo + lvlBonus;
+
+    say(combo ? "GOOOL! +BONUS ⚡" : "GOOOL! ⚽");
+    netShake = 22;
+    spawnParticles(ball.x, ball.y, 30);
+    cam.shake = Math.max(cam.shake, 4.0);
 
     updateDifficulty();
     syncHud();
 
-    setTimeout(resetShot, 520);
+    // Replay
+    startReplay();
+
+    setTimeout(() => {
+      resetShot();
+    }, 1700);
   }
 
-  function save() {
+  function save(){
     streak = 0;
     lives -= 1;
-    fx.camShake = Math.max(fx.camShake, 2.8);
-    spawnParticles(ball.x, ball.y, 16);
     say("KURTARDI! 🧤");
+    spawnParticles(ball.x, ball.y, 18);
+    cam.shake = Math.max(cam.shake, 3.0);
     syncHud();
     endCheck();
-    setTimeout(resetShot, 650);
+
+    startReplay();
+
+    setTimeout(() => {
+      resetShot();
+    }, 1700);
   }
 
-  function miss(text) {
+  function miss(text){
     streak = 0;
     lives -= 1;
     say(text);
     syncHud();
     endCheck();
-    setTimeout(resetShot, 650);
+    cam.shake = Math.max(cam.shake, 2.2);
+
+    startReplay();
+
+    setTimeout(() => {
+      resetShot();
+    }, 1600);
   }
 
-  function endCheck() {
-    if (lives <= 0) {
+  function endCheck(){
+    if(lives <= 0){
       say("MAÇ BİTTİ!");
       setTimeout(() => {
         alert(`Oyun bitti!\nSkor: ${score}\nSeviye: ${level}`);
@@ -451,43 +459,50 @@
     }
   }
 
-  // -------------------- Drawing --------------------
-  function withCamera(drawFn) {
-    let sx = 0, sy = 0;
-    if (fx.camShake > 0) {
-      sx = (Math.random()*2 - 1) * fx.camShake;
-      sy = (Math.random()*2 - 1) * fx.camShake;
-      fx.camShake *= 0.90;
-      if (fx.camShake < 0.2) fx.camShake = 0;
-    }
+  // ---------- Drawing (Pro look) ----------
+  function drawCrowd(){
+    // simple stands gradient + dots
     ctx.save();
-    ctx.translate(sx, sy);
-    drawFn();
+    const topH = 140;
+    const g = ctx.createLinearGradient(0,0,0,topH);
+    g.addColorStop(0, "rgba(10,10,10,.55)");
+    g.addColorStop(1, "rgba(10,10,10,.10)");
+    ctx.fillStyle = g;
+    ctx.fillRect(0,0,W,topH);
+
+    ctx.globalAlpha = 0.35;
+    for(let i=0;i<220;i++){
+      const x = rand(0,W);
+      const y = rand(10, topH-10);
+      ctx.fillStyle = Math.random() < 0.5 ? "rgba(255,255,255,.8)" : "rgba(255,220,80,.9)";
+      ctx.fillRect(x,y,2,2);
+    }
+    ctx.globalAlpha = 1;
     ctx.restore();
   }
 
-  function drawPitch() {
+  function drawPitch(){
     // base
     ctx.fillStyle = "#0b7";
-    ctx.fillRect(0, 0, W, H);
+    ctx.fillRect(0,0,W,H);
 
     // stripes
     ctx.globalAlpha = 0.10;
-    for (let i = 0; i < 9; i++) {
-      ctx.fillStyle = i % 2 ? "#000" : "#fff";
-      ctx.fillRect(0, i * (H / 9), W, 18);
+    for(let i=0;i<11;i++){
+      ctx.fillStyle = (i%2===0) ? "#000" : "#fff";
+      ctx.fillRect(0, i*(H/11), W, 18);
     }
     ctx.globalAlpha = 1;
 
     // vignette
-    const g = ctx.createRadialGradient(W/2, H/2, 60, W/2, H/2, 560);
-    g.addColorStop(0, "rgba(0,0,0,0)");
-    g.addColorStop(1, "rgba(0,0,0,.25)");
-    ctx.fillStyle = g;
+    const vg = ctx.createRadialGradient(W/2, H/2, 60, W/2, H/2, 580);
+    vg.addColorStop(0, "rgba(0,0,0,0)");
+    vg.addColorStop(1, "rgba(0,0,0,.28)");
+    ctx.fillStyle = vg;
     ctx.fillRect(0,0,W,H);
 
     // penalty arc
-    ctx.globalAlpha = 0.25;
+    ctx.globalAlpha = 0.22;
     ctx.beginPath();
     ctx.arc(W/2, H-210, 150, Math.PI, 0);
     ctx.strokeStyle = "#fff";
@@ -496,68 +511,52 @@
     ctx.globalAlpha = 1;
   }
 
-  function drawGoal() {
-    // goal frame
+  function drawGoal(){
+    // posts
     ctx.lineWidth = 4;
     ctx.strokeStyle = "rgba(255,255,255,.95)";
     ctx.strokeRect(mouth.x, mouth.y, mouth.w, mouth.h);
 
-    // net (shake on goal)
-    let nsx = 0, nsy = 0;
-    if (fx.netShake > 0) {
-      nsx = (Math.random()*2 - 1) * 2.5;
-      nsy = (Math.random()*2 - 1) * 2.5;
-      fx.netShake--;
+    // net
+    let nsx=0, nsy=0;
+    if(netShake>0){
+      nsx = (Math.random()*2-1)*2.5;
+      nsy = (Math.random()*2-1)*2.5;
+      netShake--;
     }
-
     ctx.globalAlpha = 0.22;
     ctx.fillStyle = "#fff";
-    for (let x = mouth.x; x <= mouth.x + mouth.w; x += 14) {
-      ctx.fillRect(x + nsx, mouth.y + nsy, 2, mouth.h);
-    }
-    for (let y = mouth.y; y <= mouth.y + mouth.h; y += 14) {
-      ctx.fillRect(mouth.x + nsx, y + nsy, mouth.w, 2);
-    }
-    ctx.globalAlpha = 1;
-
-    // target zones (subtle)
-    ctx.globalAlpha = 0.10;
-    for (const z of zones) {
-      ctx.fillStyle = "#fff";
-      ctx.fillRect(z.x, z.y, z.w, z.h);
-    }
+    for(let x=mouth.x; x<=mouth.x+mouth.w; x+=14) ctx.fillRect(x+nsx, mouth.y+nsy, 2, mouth.h);
+    for(let y=mouth.y; y<=mouth.y+mouth.h; y+=14) ctx.fillRect(mouth.x+nsx, y+nsy, mouth.w, 2);
     ctx.globalAlpha = 1;
   }
 
-  function drawWall() {
-    if (!wall.active) return;
+  function drawWall(){
+    if(!wall.active) return;
     const rects = getWallRects();
-    for (const r of rects) {
-      // body
+    for(const r of rects){
       ctx.fillStyle = "rgba(0,0,0,.40)";
-      ctx.fillRect(r.x, r.y, r.w, r.h);
-      // head
+      ctx.fillRect(r.x,r.y,r.w,r.h);
       ctx.beginPath();
-      ctx.arc(r.x + r.w/2, r.y - 9, 8, 0, Math.PI*2);
+      ctx.arc(r.x+r.w/2, r.y-9, 8, 0, Math.PI*2);
       ctx.fillStyle = "rgba(0,0,0,.35)";
       ctx.fill();
-      // highlight
       ctx.globalAlpha = 0.25;
       ctx.fillStyle = "#fff";
-      ctx.fillRect(r.x + 2, r.y + 6, r.w - 4, 8);
+      ctx.fillRect(r.x+2, r.y+6, r.w-4, 8);
       ctx.globalAlpha = 1;
     }
   }
 
-  function drawKeeper() {
+  function drawKeeper(){
     ctx.save();
     ctx.translate(keeper.x, keeper.y);
-    const bob = Math.sin(tick * 0.06) * 1.2;
-    ctx.translate(0, bob);
+    const bob = Math.sin(tick*0.06)*1.2;
+    ctx.translate(0,bob);
 
     // gloves
     ctx.fillStyle = "rgba(255,213,74,.95)";
-    ctx.fillRect(-keeper.w/2 - 10, -keeper.h/2, 10, keeper.h);
+    ctx.fillRect(-keeper.w/2-10, -keeper.h/2, 10, keeper.h);
     ctx.fillRect(keeper.w/2, -keeper.h/2, 10, keeper.h);
 
     // body
@@ -567,56 +566,55 @@
     // shine
     ctx.globalAlpha = 0.25;
     ctx.fillStyle = "#fff";
-    ctx.fillRect(-keeper.w/2 + 6, -keeper.h/2 + 4, keeper.w - 12, 6);
+    ctx.fillRect(-keeper.w/2+6, -keeper.h/2+4, keeper.w-12, 6);
     ctx.globalAlpha = 1;
 
     ctx.restore();
   }
 
-  function drawBall() {
+  function drawBallAt(x,y,rot){
     // shadow
     ctx.save();
-    const sh = clamp((ball.y - mouth.y) / (H - mouth.y), 0, 1);
-    ctx.globalAlpha = 0.22 + sh * 0.22;
+    const sh = clamp((y - mouth.y) / (H-mouth.y), 0, 1);
+    ctx.globalAlpha = 0.20 + sh*0.20;
     ctx.fillStyle = "#000";
     ctx.beginPath();
-    ctx.ellipse(ball.x, ball.y + ball.r + 10, ball.r*0.9, ball.r*0.35, 0, 0, Math.PI*2);
+    ctx.ellipse(x, y + ball.r + 10, ball.r*0.9, ball.r*0.35, 0, 0, Math.PI*2);
     ctx.fill();
     ctx.restore();
 
     // ball
     ctx.save();
-    ctx.translate(ball.x, ball.y);
-    ctx.rotate(ball.rot);
+    ctx.translate(x,y);
+    ctx.rotate(rot);
     ctx.beginPath();
-    ctx.arc(0, 0, ball.r, 0, Math.PI*2);
+    ctx.arc(0,0, ball.r, 0, Math.PI*2);
     ctx.fillStyle = "#f7f7f7";
     ctx.fill();
     ctx.lineWidth = 2;
     ctx.strokeStyle = "rgba(0,0,0,.8)";
     ctx.stroke();
 
-    // panels
     ctx.globalAlpha = 0.22;
     ctx.strokeStyle = "rgba(0,0,0,.9)";
     ctx.lineWidth = 1.5;
-    for (let a = 0; a < 6; a++) {
+    for(let a=0;a<6;a++){
       ctx.beginPath();
-      ctx.arc(0, 0, ball.r - 5, a*Math.PI/3, a*Math.PI/3 + 0.8);
+      ctx.arc(0,0, ball.r-5, a*Math.PI/3, a*Math.PI/3 + 0.8);
       ctx.stroke();
     }
     ctx.globalAlpha = 1;
     ctx.restore();
   }
 
-  function drawAim() {
-    if (!drag.active || ball.inFlight) return;
+  function drawAim(){
+    if(!drag.active || ball.inFlight || replayMode) return;
 
     const dx = drag.cx - drag.sx;
     const dy = drag.cy - drag.sy;
-    const mag = hypot(dx, dy);
-    const power = clamp(mag / 9, 0, 16);
-    const spin = clamp(dx / 90, -1.2, 1.2);
+    const mag = hypot(dx,dy);
+    const power = clamp(mag/7.5, 0, 22);
+    const spin = clamp(dx/75, -1.4, 1.4);
 
     ctx.save();
     ctx.globalAlpha = 0.9;
@@ -636,53 +634,95 @@
     // mini panel
     ctx.globalAlpha = 1;
     ctx.fillStyle = "rgba(0,0,0,.28)";
-    ctx.fillRect(12, H - 62, 196, 46);
+    ctx.fillRect(12, H-62, 210, 46);
     ctx.fillStyle = "rgba(255,255,255,.95)";
     ctx.font = "bold 14px Arial";
-    ctx.fillText("Güç: " + power.toFixed(1), 22, H - 37);
-    ctx.fillText("Falso: " + spin.toFixed(2), 22, H - 18);
+    ctx.fillText("Güç: " + power.toFixed(1), 22, H-37);
+    ctx.fillText("Falso: " + spin.toFixed(2), 22, H-18);
 
     ctx.restore();
   }
 
-  function drawParticles() {
+  function drawParticles(){
     ctx.save();
     ctx.globalAlpha = 0.9;
     ctx.fillStyle = "rgba(255,255,255,.95)";
-    for (const p of fx.particles) {
-      ctx.fillRect(p.x, p.y, 3, 3);
+    for(const p of particles) ctx.fillRect(p.x, p.y, 3, 3);
+    ctx.restore();
+  }
+
+  function drawScoreboard(){
+    // Canvas üstü pro scoreboard
+    ctx.save();
+    ctx.globalAlpha = 0.92;
+    ctx.fillStyle = "rgba(0,0,0,.35)";
+    ctx.fillRect(12, 12, W-24, 38);
+    ctx.globalAlpha = 1;
+    ctx.font = "bold 14px Arial";
+    ctx.fillStyle = "#fff";
+    ctx.fillText(`SKOR ${score}   CAN ${lives}   SERİ ${streak}   SEVİYE ${level}`, 22, 37);
+
+    if(replayMode){
+      ctx.globalAlpha = 0.9;
+      ctx.fillStyle = "rgba(0,0,0,.35)";
+      ctx.fillRect(W-118, 56, 106, 28);
+      ctx.fillStyle = "#fff";
+      ctx.font = "bold 12px Arial";
+      ctx.fillText("REPLAY ▶", W-98, 75);
+      ctx.globalAlpha = 1;
     }
     ctx.restore();
   }
 
-  function drawOverlay() {
-    if (fx.msgT <= 0) return;
-    const alpha = Math.min(1, fx.msgT / 24);
+  function drawOverlay(){
+    if(overlay.t<=0) return;
+    const a = Math.min(1, overlay.t/24);
     ctx.save();
-    ctx.globalAlpha = alpha;
+    ctx.globalAlpha = a;
     ctx.fillStyle = "rgba(0,0,0,.35)";
-    ctx.fillRect(0, H/2 - 44, W, 88);
+    ctx.fillRect(0, H/2-44, W, 88);
     ctx.fillStyle = "#fff";
     ctx.font = "900 28px Arial";
     ctx.textAlign = "center";
-    ctx.fillText(fx.msg, W/2, H/2 + 10);
+    ctx.fillText(overlay.text, W/2, H/2+10);
     ctx.restore();
   }
 
-  // -------------------- Input --------------------
-  function getPos(e) {
+  function applyCamera(drawFn){
+    // zoom + shake
+    cam.zoom = lerp(cam.zoom, cam.targetZoom, 0.06);
+
+    let sx=0, sy=0;
+    if(cam.shake > 0){
+      sx = (Math.random()*2-1)*cam.shake;
+      sy = (Math.random()*2-1)*cam.shake;
+      cam.shake *= 0.90;
+      if(cam.shake < 0.2) cam.shake = 0;
+    }
+
+    ctx.save();
+    // zoom around center
+    ctx.translate(W/2 + sx, H/2 + sy);
+    ctx.scale(cam.zoom, cam.zoom);
+    ctx.translate(-W/2, -H/2);
+    drawFn();
+    ctx.restore();
+  }
+
+  // ---------- Input ----------
+  function getPos(e){
     const r = canvas.getBoundingClientRect();
     return {
       x: (e.clientX - r.left) * (canvas.width / r.width),
-      y: (e.clientY - r.top) * (canvas.height / r.height),
+      y: (e.clientY - r.top) * (canvas.height / r.height)
     };
   }
 
   canvas.addEventListener("pointerdown", (e) => {
-    if (ball.inFlight || lives <= 0) return;
+    if(ball.inFlight || lives<=0 || replayMode) return;
     const p = getPos(e);
-    const dist = hypot(p.x - ball.x, p.y - ball.y);
-    if (dist <= ball.r + 12) {
+    const d = hypot(p.x-ball.x, p.y-ball.y);
+    if(d <= ball.r + 12){
       drag.active = true;
       drag.sx = p.x; drag.sy = p.y;
       drag.cx = p.x; drag.cy = p.y;
@@ -691,57 +731,88 @@
   });
 
   canvas.addEventListener("pointermove", (e) => {
-    if (!drag.active || ball.inFlight) return;
+    if(!drag.active || ball.inFlight || replayMode) return;
     const p = getPos(e);
     drag.cx = p.x; drag.cy = p.y;
   });
 
-  canvas.addEventListener("pointerup", (e) => {
-    if (!drag.active || ball.inFlight) return;
+  canvas.addEventListener("pointerup", () => {
+    if(!drag.active || ball.inFlight || replayMode) return;
     const dx = drag.cx - drag.sx;
     const dy = drag.cy - drag.sy;
     drag.active = false;
-    if (hypot(dx, dy) < 18) return;
-    shoot(dx, dy);
+    if(hypot(dx,dy) < 18) return;
+    shoot(dx,dy);
   });
 
-  // -------------------- Main loop --------------------
-  function frame() {
+  // ---------- Loop ----------
+  let tick = 0;
+
+  function stepReplay(){
+    if(!replayMode) return;
+    replayT -= 2; // faster playback
+    if(replayT <= 0){
+      replayMode = false;
+      cam.targetZoom = 1;
+    }
+  }
+
+  function drawReplayBall(){
+    if(!replayMode) return;
+    const idx = Math.max(0, Math.min(replayFrames.length-1, Math.floor(replayT)));
+    const f = replayFrames[idx];
+    if(f) drawBallAt(f.x, f.y, f.rot);
+  }
+
+  function frame(){
     tick++;
 
-    // freeze after goal for impact
-    if (freeze > 0) freeze--;
+    if(overlay.t>0) overlay.t--;
 
-    ctx.clearRect(0, 0, W, H);
+    // camera relax when no flight & no replay
+    if(!ball.inFlight && !replayMode) cam.targetZoom = 1;
 
-    withCamera(() => {
+    // physics steps (only if not replay)
+    if(!replayMode){
+      stepKeeper();
+      stepBall();
+      stepParticles();
+    } else {
+      stepReplay();
+      stepParticles();
+    }
+
+    // --- render ---
+    ctx.clearRect(0,0,W,H);
+
+    applyCamera(() => {
       drawPitch();
+      drawCrowd();
       drawGoal();
       drawWall();
       drawKeeper();
+      drawParticles();
 
-      if (freeze <= 0) {
-        stepKeeper();
-        stepBall();
-        stepParticles();
+      if(replayMode){
+        // show replay ball instead of live ball
+        drawReplayBall();
+      } else {
+        drawBallAt(ball.x, ball.y, ball.rot);
       }
 
-      drawParticles();
-      drawBall();
       drawAim();
-
-      if (fx.msgT > 0) fx.msgT--;
       drawOverlay();
+      drawScoreboard();
     });
 
     requestAnimationFrame(frame);
   }
 
-  // -------------------- Start --------------------
-  try {
+  // ---------- Start ----------
+  try{
     resetGame();
     frame();
-  } catch (e) {
-    showFatal(e);
+  } catch(e){
+    fatal(e);
   }
 })();
