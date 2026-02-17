@@ -37,12 +37,12 @@ const SAVE_KEY = "kargo_kacis_save_v1";
 function loadSave() {
   try {
     const raw = localStorage.getItem(SAVE_KEY);
-    if (!raw) return { coins: 1000, perm: { hp: 0, dmg: 0, spd: 0 } };
+    if (!raw) return { coins: 100000, perm: { hp: 0, dmg: 0, spd: 0 } };
     const s = JSON.parse(raw);
     if (!s.perm) s.perm = { hp: 0, dmg: 0, spd: 0 };
     return s;
   } catch {
-    return { coins: 0, perm: { hp: 0, dmg: 0, spd: 0 } };
+    return { coins: 100000, perm: { hp: 0, dmg: 0, spd: 0 } };
   }
 }
 function saveSave() { localStorage.setItem(SAVE_KEY, JSON.stringify(save)); }
