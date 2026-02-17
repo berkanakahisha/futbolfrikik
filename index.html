@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Frikik Oyunu</title>
+  <style>
+    body { margin:0; font-family: Arial, sans-serif; background:#0b6; color:#fff; }
+    header { padding:12px 16px; display:flex; gap:16px; align-items:center; justify-content:space-between; background:rgba(0,0,0,.25); }
+    .hud { display:flex; gap:14px; flex-wrap:wrap; align-items:center; }
+    .pill { background:rgba(0,0,0,.25); padding:8px 10px; border-radius:999px; }
+    #wrap { display:flex; justify-content:center; padding:12px; }
+    canvas { background:linear-gradient(#1a8, #0a6); border-radius:14px; box-shadow:0 10px 30px rgba(0,0,0,.25); touch-action:none; }
+    .help { opacity:.9; font-size:14px; }
+    button { cursor:pointer; border:0; border-radius:10px; padding:10px 12px; font-weight:700; }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="hud">
+      <div class="pill">⚽ Frikik</div>
+      <div class="pill">Skor: <span id="score">0</span></div>
+      <div class="pill">Can: <span id="lives">5</span></div>
+      <div class="pill">Seri: <span id="streak">0</span></div>
+    </div>
+    <div class="hud">
+      <div class="help">Topu sürükle → bırak = şut</div>
+      <button id="resetBtn">Sıfırla</button>
+    </div>
+  </header>
+
+  <div id="wrap">
+    <canvas id="c" width="420" height="720"></canvas>
+  </div>
+
+  <script src="game.js"></script>
+</body>
+</html>
