@@ -206,8 +206,9 @@ function ballPhysics(){
   if(ball.x > W-ball.r){ ball.x = W-ball.r; ball.vx *= -0.5; }
 
   // kaleye vardığında kontrol et
-  if(ball.y <= goalMouth.y + goalMouth.h + 10){
+ if(ball.y <= goalMouth.y + goalMouth.h){
     resolveShot();
+}
   }
 
   // aşırı aşağı kaçarsa kaçırmış say
@@ -236,12 +237,13 @@ function resolveShot(){
     return;
   }
 
-  // Gol mü? (kale ağzı içinde)
-  const inGoal =
-    ball.x > goalMouth.x + 12 &&
-    ball.x < goalMouth.x + goalMouth.w - 12 &&
-    ball.y > goalMouth.y &&
-    ball.y < goalMouth.y + goalMouth.h;
+  // Gol mü? (kale ağzı içinde - daha toleranslı)
+const inGoal =
+  ball.x > goalMouth.x &&
+  ball.x < goalMouth.x + goalMouth.w &&
+  ball.y <= goalMouth.y + goalMouth.h &&
+  ball.y >= goalMouth.y - 10;
+
 
   if(inGoal){
     goalScored();
