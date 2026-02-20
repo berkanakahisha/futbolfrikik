@@ -1,16 +1,253 @@
 <!doctype html>
 <html lang="tr">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Kargo & Kaçış</title>
-  <style>
-    html, body { margin:0; padding:0; background:#0b0f14; overflow:hidden; }
-    canvas { display:block; }
-  </style>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Kargo & Kaçış – Chaos Edition</title>
+<style>
+html,body{margin:0;padding:0;background:#05070c;overflow:hidden;}
+canvas{display:block;}
+</style>
 </head>
 <body>
-  <canvas id="c"></canvas>
-  <script type="module" src="src/game.js"></script>
+<canvas id="c"></canvas>
+
+<script>
+/* ==============================
+   CHAOS EDITION – COŞKU SÜRÜMÜ
+   ============================== */
+
+const canvas = document.getElementById("c");
+const ctx = canvas.getContext("2d");
+
+function resize(){
+  canvas.width = innerWidth;
+  canvas.height = innerHeight;
+}
+addEventListener("resize",resize);
+resize();
+
+/* ==== Utils ==== */
+const rand=(a,b)=>a+Math.random()*(b-a);
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+
+/* ==== Audio (WebAudio) ==== */
+const audioCtx=new (window.AudioContext||window.webkitAudioContext)();
+function beep(freq=200,time=0.1,vol=0.1){
+  const o=audioCtx.createOscillator();
+  const g=audioCtx.createGain();
+  o.frequency.value=freq;
+  o.type="square";
+  g.gain.value=vol;
+  o.connect(g); g.connect(audioCtx.destination);
+  o.start();
+  o.stop(audioCtx.currentTime+time);
+}
+
+/* ==== Camera Shake ==== */
+let shake=0,shakeT=0;
+function addShake(p=10,t=0.1){shake=p;shakeT=t;}
+
+/* ==== Hit Stop ==== */
+let hitStop=0;
+function addHitStop(t=0.05){hitStop=t;}
+
+/* ==== Player ==== */
+const player={
+  x:innerWidth/2,
+  y:innerHeight/2,
+  r:16,
+  speed:300,
+  hp:100,
+  fireCd:0
+};
+
+let bullets=[];
+let enemies=[];
+let particles=[];
+let score=0;
+
+/* ==== Controls ==== */
+const keys={};
+addEventListener("keydown",e=>keys[e.code]=true);
+addEventListener("keyup",e=>keys[e.code]=false);
+
+let mouse={x:0,y:0,down:false};
+addEventListener("mousemove",e=>{mouse.x=e.clientX;mouse.y=e.clientY;});
+addEventListener("mousedown",()=>{mouse.down=true;audioCtx.resume();});
+addEventListener("mouseup",()=>mouse.down=false);
+
+/* ==== Spawn ==== */
+function spawnEnemy(){
+  enemies.push({
+    x:rand(0,innerWidth),
+    y:-30,
+    r:14,
+    hp:40,
+    speed:150
+  });
+}
+setInterval(spawnEnemy,900);
+
+/* ==== Shoot ==== */
+function shoot(){
+  if(player.fireCd>0)return;
+  const ang=Math.atan2(mouse.y-player.y,mouse.x-player.x);
+  bullets.push({
+    x:player.x,
+    y:player.y,
+    vx:Math.cos(ang)*600,
+    vy:Math.sin(ang)*600,
+    r:5,
+    life:1
+  });
+  player.fireCd=0.15;
+  beep(600,0.05,0.05);
+}
+
+/* ==== Update ==== */
+let last=performance.now();
+function loop(now){
+  let dt=(now-last)/1000;
+  last=now;
+
+  if(hitStop>0){
+    hitStop-=dt;
+    dt*=0.15;
+  }
+
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+
+  if(shakeT>0){
+    shakeT-=dt;
+    ctx.save();
+    ctx.translate(rand(-shake,shake),rand(-shake,shake));
+  }
+
+  /* Movement */
+  let dx=0,dy=0;
+  if(keys["KeyW"])dy-=1;
+  if(keys["KeyS"])dy+=1;
+  if(keys["KeyA"])dx-=1;
+  if(keys["KeyD"])dx+=1;
+  let l=Math.hypot(dx,dy)||1;
+  dx/=l; dy/=l;
+  player.x+=dx*player.speed*dt;
+  player.y+=dy*player.speed*dt;
+
+  player.x=clamp(player.x,0,innerWidth);
+  player.y=clamp(player.y,0,innerHeight);
+
+  player.fireCd-=dt;
+  if(mouse.down)shoot();
+
+  /* Bullets */
+  bullets.forEach(b=>{
+    b.x+=b.vx*dt;
+    b.y+=b.vy*dt;
+    b.life-=dt;
+  });
+  bullets=bullets.filter(b=>b.life>0);
+
+  /* Enemies */
+  enemies.forEach(e=>{
+    const ang=Math.atan2(player.y-e.y,player.x-e.x);
+    e.x+=Math.cos(ang)*e.speed*dt;
+    e.y+=Math.sin(ang)*e.speed*dt;
+  });
+
+  /* Collisions */
+  bullets.forEach(b=>{
+    enemies.forEach(e=>{
+      if(Math.hypot(b.x-e.x,b.y-e.y)<b.r+e.r){
+        e.hp-=20;
+        b.life=0;
+        addShake(8,0.08);
+        addHitStop(0.03);
+        beep(200,0.05,0.05);
+
+        for(let i=0;i<12;i++){
+          particles.push({
+            x:e.x,
+            y:e.y,
+            vx:rand(-200,200),
+            vy:rand(-200,200),
+            life:0.4
+          });
+        }
+      }
+    });
+  });
+
+  enemies=enemies.filter(e=>{
+    if(e.hp<=0){
+      score+=10;
+      addShake(14,0.15);
+      addHitStop(0.05);
+      beep(120,0.08,0.08);
+      return false;
+    }
+    return true;
+  });
+
+  /* Particles */
+  particles.forEach(p=>{
+    p.x+=p.vx*dt;
+    p.y+=p.vy*dt;
+    p.life-=dt;
+  });
+  particles=particles.filter(p=>p.life>0);
+
+  /* ==== DRAW ==== */
+
+  // Glow
+  ctx.shadowBlur=20;
+  ctx.shadowColor="#48cae4";
+
+  // Player
+  ctx.fillStyle="#48cae4";
+  ctx.beginPath();
+  ctx.arc(player.x,player.y,player.r,0,Math.PI*2);
+  ctx.fill();
+
+  // Bullets
+  ctx.shadowColor="#9be7ff";
+  bullets.forEach(b=>{
+    ctx.fillStyle="#9be7ff";
+    ctx.beginPath();
+    ctx.arc(b.x,b.y,b.r,0,Math.PI*2);
+    ctx.fill();
+  });
+
+  // Enemies
+  ctx.shadowColor="#ff4d6d";
+  enemies.forEach(e=>{
+    ctx.fillStyle="#ff4d6d";
+    ctx.beginPath();
+    ctx.arc(e.x,e.y,e.r,0,Math.PI*2);
+    ctx.fill();
+  });
+
+  // Particles
+  ctx.shadowBlur=0;
+  ctx.fillStyle="#ffffff";
+  particles.forEach(p=>{
+    ctx.globalAlpha=p.life/0.4;
+    ctx.fillRect(p.x,p.y,3,3);
+    ctx.globalAlpha=1;
+  });
+
+  // UI
+  ctx.fillStyle="#fff";
+  ctx.font="18px Arial";
+  ctx.fillText("SKOR: "+score,20,30);
+  ctx.fillText("CAN: "+player.hp,20,55);
+
+  if(shakeT>0)ctx.restore();
+
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script>
 </body>
 </html>
