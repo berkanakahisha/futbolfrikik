@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>VOIDSTORM ARENA – Phase 3</title>
+<title>VOIDSTORM ARENA – Phase 3 (Weapons + Pause + Resume)</title>
 <style>
   html,body{margin:0;padding:0;background:#05070c;overflow:hidden;}
   canvas{display:block;}
@@ -14,16 +14,12 @@
 
 <script>
 /* ==========================================================
-   VOIDSTORM ARENA – PHASE 3 (ALL-IN-ONE)
-   - Space visuals (nebula + parallax + stars)
-   - Ship-like rendering (no circles for ships)
-   - Roguelite: wave -> upgrade cards (pick 1 of 3)
-   - Elite enemies (shielded / berserk / splitter / cloaked)
-   - Combo system (kill chain -> dmg bonus)
-   - Meta progression (persistent coins + shop)
-   - Boss "Mothership" (3 phases)
-   - Tuned shake (normal kills minimal)
-   - SFX rate-limited (no headache)
+   VOIDSTORM ARENA – PHASE 3 (ALL-IN-ONE, UPDATED)
+   Adds:
+   - Weapons: PULSE / SCATTER / LASER / ROCKET (+ weapon cards)
+   - Arcade-relaxed difficulty tuning
+   - Pause/Resume with P
+   - Session Resume (continue run until tab closed): sessionStorage cache
    ========================================================== */
 
 const canvas = document.getElementById("c");
@@ -78,7 +74,7 @@ const SAVE_KEY="voidstorm_save_v1";
 function loadSave(){
   try{
     const raw = localStorage.getItem(SAVE_KEY);
-    if(!raw) return { coins: 100000, perm: { hp:0, dmg:0, spd:0, cards:0, revive:0 } }; // seni 100k ile başlatıyoruz
+    if(!raw) return { coins: 100000, perm: { hp:0, dmg:0, spd:0, cards:0, revive:0 } }; // start 100k
     const s = JSON.parse(raw);
     if(!s.perm) s.perm={hp:0,dmg:0,spd:0,cards:0,revive:0};
     if(typeof s.coins!=="number") s.coins=0;
@@ -90,16 +86,27 @@ function loadSave(){
 function saveSave(){ localStorage.setItem(SAVE_KEY, JSON.stringify(save)); }
 let save = loadSave();
 
+/* ---------- Session Run Cache (until tab closed) ---------- */
+const RUN_KEY = "voidstorm_run_cache_v1";
+
 /* ---------- Game State ---------- */
-const STATE = { MENU:"menu", PLAY:"play", UPGRADE:"upgrade", DEAD:"dead" };
+const STATE = { MENU:"menu", PLAY:"play", PAUSE:"pause", UPGRADE:"upgrade", DEAD:"dead" };
 let state = STATE.MENU;
+
+/* ---------- Weapons ---------- */
+const WEAPONS = {
+  PULSE:   { name:"Pulse Pistol", shots:1, spread:0.00, speedMul:1.00, dmgMul:1.00, lifeMul:1.00, splash:0 },
+  SCATTER: { name:"Scatter Core", shots:5, spread:0.12, speedMul:0.92, dmgMul:0.42, lifeMul:0.85, splash:0 },
+  LASER:   { name:"Laser Emitter",shots:1, spread:0.00, speedMul:1.35, dmgMul:0.85, lifeMul:0.70, splash:0 },
+  ROCKET:  { name:"Rocket Pod",   shots:1, spread:0.02, speedMul:0.75, dmgMul:1.35, lifeMul:0.95, splash:90 },
+};
 
 /* ---------- Background (space) ---------- */
 let t=0;
 const bg = {
   starsFar: Array.from({length:160}, ()=>({x:rand(0,innerWidth), y:rand(0,innerHeight), r:rand(0.5,1.6), a:rand(0.08,0.28)})),
   starsMid: Array.from({length:90}, ()=>({x:rand(0,innerWidth), y:rand(0,innerHeight), r:rand(0.8,2.3), a:rand(0.10,0.36)})),
-  streaks: [] // wave transitions
+  streaks: []
 };
 function addStreakBurst(){
   for(let i=0;i<32;i++){
@@ -113,7 +120,6 @@ function addStreakBurst(){
   }
 }
 function drawSpace(){
-  // nebula gradient
   const g = ctx.createRadialGradient(innerWidth*0.55, innerHeight*0.45, 60, innerWidth*0.5, innerHeight*0.5, Math.max(innerWidth,innerHeight)*0.85);
   g.addColorStop(0, "rgba(90,40,130,0.35)");
   g.addColorStop(0.45, "rgba(10,22,45,0.60)");
@@ -121,14 +127,12 @@ function drawSpace(){
   ctx.fillStyle = g;
   ctx.fillRect(0,0,innerWidth,innerHeight);
 
-  // far stars
   for(const p of bg.starsFar){
     const x=(p.x + t*10) % (innerWidth+80) - 40;
     const y=(p.y + t*6)  % (innerHeight+80) - 40;
     ctx.fillStyle=`rgba(140,190,255,${p.a})`;
     ctx.beginPath(); ctx.arc(x,y,p.r,0,Math.PI*2); ctx.fill();
   }
-  // mid stars
   for(const p of bg.starsMid){
     const x=(p.x + t*22) % (innerWidth+120) - 60;
     const y=(p.y + t*14) % (innerHeight+120) - 60;
@@ -136,7 +140,6 @@ function drawSpace(){
     ctx.beginPath(); ctx.arc(x,y,p.r,0,Math.PI*2); ctx.fill();
   }
 
-  // subtle grid drift
   ctx.globalAlpha = 0.08;
   ctx.strokeStyle="#2a3550";
   const step=72;
@@ -150,7 +153,6 @@ function drawSpace(){
   }
   ctx.globalAlpha = 1;
 
-  // streaks (wave starts / boss intro)
   for(const s of bg.streaks){
     ctx.globalAlpha = clamp(s.life/0.35,0,1)*0.55;
     ctx.strokeStyle="rgba(200,240,255,0.9)";
@@ -175,6 +177,9 @@ function makePlayer(){
     dashCd: 0, dashT: 0,
     ultCd: 0,
 
+    // weapon
+    weapon: "PULSE",
+
     // combat stats (run-based)
     dmg: 22,
     fireRate: 8.0,
@@ -186,12 +191,12 @@ function makePlayer(){
     crit: 0.05,
     critMul: 1.6,
     lifesteal: 0,
-    plasma: 0,      // on-hit small explosion
-    chain: 0,       // ion chain chance
-    slow: 0,        // ion slow
-    drone: 0,       // companion drones
-    shieldRegen: 0, // passive regen
-    shield: 0,      // temporary shield hp
+    plasma: 0,
+    chain: 0,
+    slow: 0,
+    drone: 0,
+    shieldRegen: 0,
+    shield: 0,
     shieldMax: 0,
 
     // scoring
@@ -201,9 +206,9 @@ function makePlayer(){
 
     // combo
     combo: 0,
-    comboT: 0, // time left to keep combo
-    dmgBonus: 0, // derived
-    revives: 0, // from perm
+    comboT: 0,
+    dmgBonus: 0,
+    revives: 0,
   };
 
   // apply permanent upgrades
@@ -213,23 +218,23 @@ function makePlayer(){
   p.speed *= (1 + save.perm.spd * 0.05);
   p.revives = save.perm.revive;
 
-  // small starting shield vibe if you want: keep 0 for balance
+  // Arcade-relaxed: small starting shield
+  p.shieldMax += 20;
+  p.shield += 20;
+  p.shieldRegen = Math.max(p.shieldRegen, 1);
+
   return p;
 }
 
 let player = makePlayer();
-let bullets = [];   // {x,y,vx,vy,r,life,dmg,trail[],enemy,pierce,ric,hitSet?}
-let enemies = [];   // {x,y,vx,vy,r,hp,maxHp,speed,dmg,type,col,hitT,elite?,mod?,shield?,cloakT?}
-let particles = []; // {x,y,vx,vy,life,size,col,glow}
-let rings = [];     // ultimate shockwave
-let drones = [];    // orbit drones
+let bullets = [];   // {x,y,vx,vy,r,life,dmg,trail[],enemy,pierce,ric,hitSet?,splash?}
+let enemies = [];
+let particles = [];
+let rings = [];
+let drones = [];
 
-/* ---------- SFX limiter (shot sound) ---------- */
-let sfxShotTimer = 0;
-
-/* ---------- Waves/Boss/Card state ---------- */
-let boss = null;           // mothership
-let waveState = "fight";   // fight | boss
+let boss = null;
+let waveState = "fight";
 let waveBudget = 0;
 let waveSpawned = 0;
 let spawnT = 0;
@@ -238,6 +243,10 @@ let waveClearT = 0;
 let upgradeCards = [];
 let selectedCard = -1;
 
+/* ---------- SFX limiter ---------- */
+let sfxShotTimer = 0;
+
+/* ---------- Shop ---------- */
 const SHOP = [
   { key:"hp",     title:"Kalıcı +10 Max Can",  cost:l=>35 + l*30,  apply:()=>save.perm.hp++ },
   { key:"dmg",    title:"Kalıcı +%6 Hasar",    cost:l=>45 + l*40,  apply:()=>save.perm.dmg++ },
@@ -252,8 +261,91 @@ function resetRun(){
   boss=null;
   waveState="fight";
   startWave(1);
+  saveRunCache(); // start caching
 }
 
+/* ---------- Run Cache Pack/Load ---------- */
+function packRunState(){
+  const cleanBullets = bullets.map(b => ({
+    x:b.x,y:b.y,vx:b.vx,vy:b.vy,r:b.r,life:b.life,dmg:b.dmg,
+    enemy:!!b.enemy,pierce:b.pierce||0,ric:b.ric||0,
+    trail:(b.trail||[]).map(t=>({x:t.x,y:t.y,life:t.life})),
+    splash:b.splash||0,
+    weapon:b.weapon||"PULSE"
+  }));
+
+  const cleanEnemies = enemies.map(e => ({
+    x:e.x,y:e.y,r:e.r,hp:e.hp,maxHp:e.maxHp,speed:e.speed,dmg:e.dmg,
+    type:e.type,col:e.col,glowCol:e.glowCol,value:e.value,
+    hitT:e.hitT||0, elite:!!e.elite, mod:e.mod||null,
+    shield:e.shield||0, shieldMax:e.shieldMax||0,
+    cloakT:e.cloakT||0, slowT:e.slowT||0, shootCd:e.shootCd||0
+  }));
+
+  const cleanRings = rings.map(r=>({x:r.x,y:r.y,r:r.r,vr:r.vr,life:r.life,max:r.max,damage:r.damage}));
+  const cleanBoss = boss ? ({
+    x:boss.x,y:boss.y,r:boss.r,hp:boss.hp,maxHp:boss.maxHp,
+    phase:boss.phase,shootT:boss.shootT,patternT:boss.patternT,
+    hitT:boss.hitT||0,dronesT:boss.dronesT||0
+  }) : null;
+  const cleanDrones = drones.map(d=>({ang:d.ang,shootCd:d.shootCd}));
+
+  return {
+    v:1,
+    ts:Date.now(),
+    state,
+    waveState,
+    waveBudget,
+    waveSpawned,
+    spawnT,
+    waveClearT,
+    player,
+    bullets: cleanBullets,
+    enemies: cleanEnemies,
+    rings: cleanRings,
+    boss: cleanBoss,
+    drones: cleanDrones
+  };
+}
+function saveRunCache(){
+  if(state!==STATE.PLAY && state!==STATE.PAUSE) return;
+  try{ sessionStorage.setItem(RUN_KEY, JSON.stringify(packRunState())); }catch{}
+}
+function loadRunCache(){
+  try{
+    const raw = sessionStorage.getItem(RUN_KEY);
+    if(!raw) return false;
+    const d = JSON.parse(raw);
+    if(!d || d.v!==1) return false;
+
+    state = d.state || STATE.PLAY;
+    waveState = d.waveState || "fight";
+    waveBudget = d.waveBudget || 0;
+    waveSpawned = d.waveSpawned || 0;
+    spawnT = d.spawnT || 0;
+    waveClearT = d.waveClearT || 0;
+
+    player = d.player;
+
+    bullets = (d.bullets||[]).map(b=>({...b, hitSet:new Set()}));
+    enemies = (d.enemies||[]);
+    rings = (d.rings||[]);
+    boss = d.boss || null;
+    drones = (d.drones||[]);
+
+    return true;
+  }catch{ return false; }
+}
+function clearRunCache(){
+  try{ sessionStorage.removeItem(RUN_KEY); }catch{}
+}
+
+addEventListener("visibilitychange", () => {
+  if(document.visibilityState==="hidden") saveRunCache();
+});
+addEventListener("beforeunload", () => saveRunCache());
+
+/* ---------- FX ---------- */
 function burst(x,y, col="rgba(255,255,255,0.9)", n=14, sp=260, size=3, life=0.45, glow=12){
   for(let i=0;i<n;i++){
     const a=rand(0,Math.PI*2);
@@ -261,7 +353,6 @@ function burst(x,y, col="rgba(255,255,255,0.9)", n=14, sp=260, size=3, life=0.45
     particles.push({x,y,vx:Math.cos(a)*v,vy:Math.sin(a)*v,life:rand(life*0.6,life),size:rand(size*0.6,size*1.4),col,glow});
   }
 }
-
 function sparkLine(x,y, ang, col="rgba(155,231,255,0.9)"){
   for(let i=0;i<6;i++){
     const v=rand(160,420);
@@ -269,7 +360,7 @@ function sparkLine(x,y, ang, col="rgba(155,231,255,0.9)"){
   }
 }
 
-/* ---------- Ship Rendering (no circles for ships) ---------- */
+/* ---------- Ship Rendering ---------- */
 function drawShip(x,y, ang, scale, bodyCol, glowCol, wingCol=null, flame=true, hurtFlash=false){
   ctx.save();
   ctx.translate(x,y);
@@ -278,7 +369,6 @@ function drawShip(x,y, ang, scale, bodyCol, glowCol, wingCol=null, flame=true, h
   ctx.shadowBlur = 18*scale;
   ctx.shadowColor = glowCol;
 
-  // body
   ctx.fillStyle = hurtFlash ? "rgba(255,255,255,0.95)" : bodyCol;
   ctx.beginPath();
   ctx.moveTo(22*scale, 0);
@@ -288,7 +378,6 @@ function drawShip(x,y, ang, scale, bodyCol, glowCol, wingCol=null, flame=true, h
   ctx.closePath();
   ctx.fill();
 
-  // wings
   ctx.shadowBlur = 12*scale;
   ctx.shadowColor = glowCol;
   ctx.fillStyle = wingCol || "rgba(10,22,45,0.85)";
@@ -306,7 +395,6 @@ function drawShip(x,y, ang, scale, bodyCol, glowCol, wingCol=null, flame=true, h
   ctx.closePath();
   ctx.fill();
 
-  // cockpit/core
   ctx.shadowBlur = 22*scale;
   ctx.shadowColor = "rgba(255,255,255,0.6)";
   ctx.fillStyle = "rgba(20,28,40,0.95)";
@@ -314,7 +402,6 @@ function drawShip(x,y, ang, scale, bodyCol, glowCol, wingCol=null, flame=true, h
   ctx.ellipse(6*scale, 0, 6*scale, 4*scale, 0, 0, Math.PI*2);
   ctx.fill();
 
-  // flame
   if(flame){
     ctx.shadowBlur = 24*scale;
     ctx.shadowColor = "rgba(255,140,0,0.9)";
@@ -327,12 +414,10 @@ function drawShip(x,y, ang, scale, bodyCol, glowCol, wingCol=null, flame=true, h
     ctx.closePath();
     ctx.fill();
   }
-
   ctx.restore();
 }
 
 function drawEnemyShip(e){
-  // cloak handling
   let alpha = 1;
   if(e.mod==="cloaked"){
     alpha = (e.cloakT>0) ? 0.18 : 1;
@@ -340,7 +425,6 @@ function drawEnemyShip(e){
   ctx.globalAlpha = alpha;
 
   const ang = Math.atan2(player.y-e.y, player.x-e.x);
-
   let body = e.col;
   let glow = e.glowCol;
   let wing = "rgba(10,22,45,0.85)";
@@ -348,16 +432,10 @@ function drawEnemyShip(e){
 
   if(e.type==="tank"){ scale *= 1.15; wing = "rgba(30,12,30,0.85)"; }
   if(e.type==="shooter"){ scale *= 0.95; wing = "rgba(12,30,40,0.85)"; }
+  if(e.elite){ wing = "rgba(255,209,102,0.18)"; }
 
-  // elite tint
-  if(e.elite){
-    wing = "rgba(255,209,102,0.18)";
-  }
-
-  // draw as ship
   drawShip(e.x,e.y, ang, scale, body, glow, wing, false, e.hitT>0);
 
-  // shield overlay (shielded elite)
   if(e.shield && e.shield>0){
     const s = clamp(e.shield/e.shieldMax,0,1);
     ctx.shadowBlur = 16;
@@ -383,24 +461,21 @@ function spawnEnemy(type="chaser", forceElite=false){
 
   const e = { x,y, hitT:0, type, elite:false, mod:null, cloakT:0 };
 
-  // base stats
   if(type==="chaser"){
-    e.r=14; e.maxHp=46 + player.wave*6; e.hp=e.maxHp; e.speed=140 + player.wave*5; e.dmg=14 + player.wave*1.2;
+    e.r=14; e.maxHp=44 + player.wave*5.5; e.hp=e.maxHp; e.speed=135 + player.wave*4.8; e.dmg=13 + player.wave*1.1;
     e.col="rgba(255,77,109,0.95)"; e.glowCol="rgba(255,77,109,0.9)"; e.value=10;
   } else if(type==="shooter"){
-    e.r=13; e.maxHp=36 + player.wave*5; e.hp=e.maxHp; e.speed=110 + player.wave*3; e.dmg=10 + player.wave*1.0;
+    e.r=13; e.maxHp=34 + player.wave*4.8; e.hp=e.maxHp; e.speed=105 + player.wave*2.8; e.dmg=10 + player.wave*0.9;
     e.col="rgba(179,146,240,0.95)"; e.glowCol="rgba(179,146,240,0.9)"; e.value=14;
-    e.shootCd=rand(0.7,1.3);
+    e.shootCd=rand(0.75,1.35);
   } else if(type==="tank"){
-    e.r=20; e.maxHp=130 + player.wave*14; e.hp=e.maxHp; e.speed=80 + player.wave*1.5; e.dmg=24 + player.wave*1.7;
+    e.r=20; e.maxHp=120 + player.wave*13; e.hp=e.maxHp; e.speed=78 + player.wave*1.4; e.dmg=22 + player.wave*1.6;
     e.col="rgba(255,175,204,0.95)"; e.glowCol="rgba(255,175,204,0.9)"; e.value=22;
   }
 
-  // elite chance
   const eliteChance = clamp(0.10 + player.wave*0.004, 0.10, 0.18);
   if(forceElite || Math.random()<eliteChance){
     e.elite = true;
-    // pick modifier
     const mods = ["shielded","berserk","splitter","cloaked"];
     e.mod = mods[Math.floor(Math.random()*mods.length)];
 
@@ -409,7 +484,7 @@ function spawnEnemy(type="chaser", forceElite=false){
 
     if(e.mod==="berserk"){
       e.speed *= 1.35;
-      e.dmg *= 1.15;
+      e.dmg *= 1.12;
       e.glowCol="rgba(255,209,102,0.95)";
     } else if(e.mod==="shielded"){
       e.shieldMax = Math.round(30 + player.wave*6);
@@ -419,7 +494,7 @@ function spawnEnemy(type="chaser", forceElite=false){
       e.glowCol="rgba(255,209,102,0.95)";
     } else if(e.mod==="cloaked"){
       e.glowCol="rgba(80,220,255,0.9)";
-      e.cloakT = 0.9; // initially cloaked until close
+      e.cloakT = 0.9;
     }
   }
 
@@ -458,8 +533,9 @@ function startWave(n){
     addShake(10,0.18);
   } else {
     boss=null;
-    // budget ensures wave ends; early waves short
-    waveBudget = Math.floor(8 + n*2.4);     // tuned shorter than phase2
+
+    // Arcade-relaxed: shorter waves
+    waveBudget = Math.floor(7 + n*2.1);
     waveSpawned = 0;
 
     const firstBurst = Math.min(5, waveBudget);
@@ -467,35 +543,37 @@ function startWave(n){
   }
 }
 
-/* ---------- Cards (Roguelite upgrades) ---------- */
+/* ---------- Cards ---------- */
 const cardPool = [
-  // stats
   { id:"dmg", name:"+%15 Hasar", desc:"Daha sert vuruş.", apply:p=>p.dmg*=1.15 },
   { id:"fir", name:"+%18 Atış Hızı", desc:"Daha sık ateş.", apply:p=>p.fireRate*=1.18 },
   { id:"spd", name:"+%10 Hız", desc:"Daha çevik.", apply:p=>p.speed*=1.10 },
   { id:"hp",  name:"+25 Max Can", desc:"Daha dayanıklı.", apply:p=>{p.maxHp+=25; p.hp+=25;} },
   { id:"bsp", name:"+%15 Mermi Hızı", desc:"Daha hızlı enerji.", apply:p=>p.bulletSpeed*=1.15 },
 
-  // mechanics
-  { id:"ms",  name:"Çift Atış", desc:"Her atış +1 mermi.", apply:p=>p.multishot+=1 },
+  { id:"ms",  name:"Multishot +1", desc:"Her atış +1 mermi.", apply:p=>p.multishot+=1 },
   { id:"prc", name:"+1 Delme", desc:"Mermi 1 hedef deler.", apply:p=>p.pierce+=1 },
   { id:"ric", name:"+1 Sekme", desc:"Duvara çarpınca seker.", apply:p=>p.ricochet+=1 },
   { id:"crt", name:"+%8 Kritik", desc:"Kritik şansı artar.", apply:p=>p.crit=Math.min(0.6,p.crit+0.08) },
   { id:"crm", name:"Kritik Çarpanı +0.4", desc:"Kritik daha güçlü.", apply:p=>p.critMul+=0.4 },
   { id:"ls",  name:"Can Çalma", desc:"Hasarın %6'sı can.", apply:p=>p.lifesteal=Math.min(0.22,p.lifesteal+0.06) },
 
-  // space themed
   { id:"pl",  name:"Plasma Patlaması", desc:"Vuruşta mini patlama.", apply:p=>p.plasma=Math.min(3,p.plasma+1) },
   { id:"ion", name:"Ion Chain", desc:"Kritik → yakın hedefe sıçrar.", apply:p=>p.chain=Math.min(0.55,p.chain+0.12) },
   { id:"slow",name:"Ion Slow", desc:"İsabet → yavaşlatır.", apply:p=>p.slow=Math.min(0.55,p.slow+0.12) },
   { id:"sh",  name:"Shield Matrix", desc:"Kalkan +20 (yenilenir).", apply:p=>{p.shieldMax+=20; p.shield+=20; p.shieldRegen=Math.min(6,p.shieldRegen+1);} },
   { id:"dr",  name:"Drone Companion", desc:"Etrafında drone döner.", apply:p=>{ p.drone=Math.min(3,p.drone+1); } },
-  { id:"ult", name:"Ultimate -%18 CD", desc:"Space daha sık.", apply:p=>p.ultCd=Math.max(0,p.ultCd-1.2) }, // immediate small help
+
+  // WEAPON CARDS
+  { id:"wp_pl", name:"Weapon: Pulse Stabilizer", desc:"Pulse +%10 hasar.", apply:p=>{p.weapon="PULSE"; p.dmg*=1.10;} },
+  { id:"wp_sc", name:"Weapon: Scatter Core", desc:"Shotgun hissi (5 saçma).", apply:p=>{p.weapon="SCATTER"; p.fireRate*=0.92;} },
+  { id:"wp_ls", name:"Weapon: Laser Emitter", desc:"Hızlı lazer atış.", apply:p=>{p.weapon="LASER"; p.fireRate*=1.08;} },
+  { id:"wp_rk", name:"Weapon: Rocket Pod", desc:"Yavaş ama patlayıcı.", apply:p=>{p.weapon="ROCKET"; p.fireRate*=0.75;} },
 ];
 
 function pickCards(){
-  const extra = save.perm.cards || 0; // permanent +cards = more choices
-  const count = 3 + Math.min(2, extra); // cap at 5
+  const extra = save.perm.cards || 0;
+  const count = 3 + Math.min(2, extra);
   const arr = [...cardPool];
   for(let i=arr.length-1;i>0;i--){
     const j = Math.floor(Math.random()*(i+1));
@@ -504,13 +582,10 @@ function pickCards(){
   upgradeCards = arr.slice(0, count);
   selectedCard = -1;
 }
-
 function applyCard(idx){
   const c = upgradeCards[idx];
   if(!c) return;
   c.apply(player);
-
-  // if drone increased, rebuild drones
   rebuildDrones();
 }
 
@@ -525,42 +600,47 @@ function rebuildDrones(){
 /* ---------- Combat ---------- */
 function shootPlayer(){
   if(player.fireCd>0) return;
+
   const ang = Math.atan2(mouse.y-player.y, mouse.x-player.x);
-  const shots = 1 + player.multishot;
-  const spread = Math.min(0.30, 0.07 + shots*0.03);
+  const wpn = WEAPONS[player.weapon] || WEAPONS.PULSE;
+
+  const baseShots = wpn.shots;
+  const shots = baseShots + player.multishot;
+  const spread = (wpn.spread || 0) + Math.min(0.22, (shots-1)*0.025);
 
   for(let i=0;i<shots;i++){
     const off = (i-(shots-1)/2)*spread;
     const a = ang + off;
 
+    const dmg = (player.dmg * wpn.dmgMul) * (1 + player.dmgBonus);
     bullets.push({
       x: player.x + Math.cos(a)*(player.r+10),
       y: player.y + Math.sin(a)*(player.r+10),
-      vx: Math.cos(a)*player.bulletSpeed,
-      vy: Math.sin(a)*player.bulletSpeed,
-      r: 4.4,
-      life: player.bulletLife,
-      dmg: player.dmg * (1 + player.dmgBonus),
+      vx: Math.cos(a)*(player.bulletSpeed*wpn.speedMul),
+      vy: Math.sin(a)*(player.bulletSpeed*wpn.speedMul),
+      r: (player.weapon==="ROCKET") ? 5.2 : 4.2,
+      life: player.bulletLife*wpn.lifeMul,
+      dmg,
       trail: [],
-      enemy: false,
+      enemy:false,
       pierce: player.pierce,
       ric: player.ricochet,
-      hitSet: new Set()
+      hitSet: new Set(),
+      splash: wpn.splash || 0,
+      weapon: player.weapon
     });
   }
 
   player.fireCd = 1/player.fireRate;
 
-  // shot sfx limiter + probability
   if(sfxShotTimer<=0){
-    sfxShotTimer = 0.16;
+    sfxShotTimer=0.16;
     if(Math.random()<0.65) sfx(520+rand(-40,40),0.03,0.028,"triangle");
   }
-
   sparkLine(player.x, player.y, ang+Math.PI, "rgba(155,231,255,0.9)");
 }
 
-function enemyShoot(x,y, ang, dmg, sp=520){
+function enemyShoot(x,y, ang, dmg, sp=480){ // arcade-relaxed: slower bullets
   bullets.push({
     x,y,
     vx: Math.cos(ang)*sp,
@@ -571,13 +651,12 @@ function enemyShoot(x,y, ang, dmg, sp=520){
     trail: [],
     enemy: true
   });
-  sfx(210,0.03,0.02,"square");
+  if(Math.random()<0.6) sfx(210,0.03,0.018,"square");
 }
 
 function useUltimate(){
   if(player.ultCd>0) return;
   player.ultCd = 9.5;
-
   rings.push({x:player.x,y:player.y,r:player.r+10,vr:880,life:0.55,max:480,damage:58});
   addShake(14,0.16);
   addHitStop(0.05);
@@ -586,55 +665,46 @@ function useUltimate(){
 }
 
 function hurtPlayer(d){
-  // shield first
   if(player.shield>0){
     const take = Math.min(player.shield, d);
     player.shield -= take;
     d -= take;
-    // shield hit fx (no invuln needed)
     burst(player.x,player.y,"rgba(155,231,255,0.75)", 12, 300, 2.6, 0.35, 16);
-    sfx(260,0.03,0.03,"triangle");
+    sfx(260,0.03,0.02,"triangle");
     if(d<=0) return;
   }
-
   if(player.invuln>0) return;
+
   player.hp -= d;
   player.invuln = 0.45;
 
   addShake(10,0.10);
   addHitStop(0.03);
   burst(player.x,player.y,"rgba(255,77,109,0.9)", 18, 360, 3.2, 0.45, 14);
-  sfx(170,0.06,0.06,"square");
+  sfx(170,0.06,0.05,"square");
 
-  // combo drop
   player.combo = 0;
   player.comboT = 0;
   player.dmgBonus = 0;
 }
 
 function onKill(isElite=false){
-  // combo
   player.combo++;
-  player.comboT = 2.8; // refresh timer
-  const bonus = clamp(player.combo*0.012, 0, 0.22); // up to +22%
-  player.dmgBonus = bonus;
+  player.comboT = 2.8;
+  player.dmgBonus = clamp(player.combo*0.012, 0, 0.22);
 
-  // reward coins
-  const gain = isElite ? 4 : 2;
-  player.runCoins += gain;
+  player.runCoins += isElite ? 4 : 2;
 
-  // shake: minimal on normal, more on elite
   if(isElite){
     addShake(10,0.10);
     addHitStop(0.045);
   } else {
-    // almost none
     addShake(2.5, 0.04);
     addHitStop(0.02);
   }
 }
 
-/* ---------- Rendering helpers ---------- */
+/* ---------- UI helpers ---------- */
 function drawText(s,x,y,size=16,align="left",a=1){
   ctx.globalAlpha=a;
   ctx.fillStyle="#e7eef9";
@@ -643,7 +713,6 @@ function drawText(s,x,y,size=16,align="left",a=1){
   ctx.fillText(s,x,y);
   ctx.globalAlpha=1;
 }
-
 function drawPanel(x,y,w,h,alpha=0.88){
   ctx.globalAlpha=alpha;
   ctx.fillStyle="rgba(8,10,16,0.92)";
@@ -654,27 +723,84 @@ function drawPanel(x,y,w,h,alpha=0.88){
   ctx.strokeRect(x,y,w,h);
 }
 
+/* ---------- Buttons ---------- */
+let uiButtons = [];
+function addBtn(id,x,y,w,h){ uiButtons.push({id,x,y,w,h}); }
+function hitBtn(mx,my){ return uiButtons.find(b=>mx>=b.x && mx<=b.x+b.w && my>=b.y && my<=b.y+b.h); }
+
+/* ---------- Pause toggle (P) ---------- */
+addEventListener("keydown", (e)=>{
+  if(e.code==="KeyP"){
+    if(state===STATE.PLAY){
+      state=STATE.PAUSE;
+      saveRunCache();
+    } else if(state===STATE.PAUSE){
+      state=STATE.PLAY;
+    }
+  }
+});
+
+/* ---------- World clamp ---------- */
 function worldClamp(){
   player.x = clamp(player.x, 24, innerWidth-24);
   player.y = clamp(player.y, 24, innerHeight-24);
 }
 
-/* ---------- UI Buttons Hitboxes ---------- */
-let uiButtons = [];
-function addBtn(id,x,y,w,h){ uiButtons.push({id,x,y,w,h}); }
-function hitBtn(mx,my){
-  return uiButtons.find(b=>mx>=b.x && mx<=b.x+b.w && my>=b.y && my<=b.y+b.h);
+/* ---------- Boss + waves + cards ---------- */
+function spawnBoss(){
+  boss = {
+    x: innerWidth/2, y: -160,
+    r: 64,
+    hp: 1100 + player.wave*120,
+    maxHp: 1100 + player.wave*120,
+    phase: 1,
+    shootT: 0.6,
+    patternT: 0,
+    hitT: 0,
+    dronesT: 2.2,
+  };
+}
+function startWave(n){
+  player.wave = n;
+  waveState = (n%5===0) ? "boss" : "fight";
+  enemies.length=0;
+  bullets.length=0;
+  rings.length=0;
+  spawnT=0;
+  waveClearT=0;
+
+  addStreakBurst();
+
+  if(waveState==="boss"){
+    waveBudget=0; waveSpawned=0;
+    spawnBoss();
+    sfx(110,0.12,0.08,"sawtooth");
+    addShake(10,0.18);
+  } else {
+    boss=null;
+    waveBudget = Math.floor(7 + n*2.1);
+    waveSpawned = 0;
+
+    const firstBurst = Math.min(5, waveBudget);
+    for(let i=0;i<firstBurst;i++){ spawnEnemy("chaser"); waveSpawned++; }
+  }
 }
 
-/* ---------- Update Loop ---------- */
-let last=performance.now();
+/* ---------- Update ---------- */
+let autosaveT=0;
 
 function update(dt){
   t += dt;
 
+  // streaks
+  for(const s of bg.streaks){ s.x += s.vx*dt; s.y += s.vy*dt; s.life -= dt; }
+  bg.streaks = bg.streaks.filter(s=>s.life>0);
+
   // timers
   shakeT = Math.max(0, shakeT - dt);
   if(shakeT===0) shake=0;
+
+  if(state !== STATE.PLAY) return;
 
   player.invuln = Math.max(0, player.invuln - dt);
   player.fireCd = Math.max(0, player.fireCd - dt);
@@ -683,23 +809,14 @@ function update(dt){
   player.ultCd  = Math.max(0, player.ultCd  - dt);
   sfxShotTimer  = Math.max(0, sfxShotTimer  - dt);
 
-  // combo timer decay
+  // combo
   player.comboT = Math.max(0, player.comboT - dt);
-  if(player.comboT<=0){
-    player.combo = 0;
-    player.dmgBonus = 0;
-  }
+  if(player.comboT<=0){ player.combo=0; player.dmgBonus=0; }
 
-  // passive shield regen
+  // shield regen
   if(player.shieldRegen>0 && player.shieldMax>0){
     player.shield = Math.min(player.shieldMax, player.shield + player.shieldRegen*dt*0.6);
   }
-
-  // bg streaks
-  for(const s of bg.streaks){ s.x += s.vx*dt; s.y += s.vy*dt; s.life -= dt; }
-  bg.streaks = bg.streaks.filter(s=>s.life>0);
-
-  if(state !== STATE.PLAY) return;
 
   // movement
   let dx=0, dy=0;
@@ -707,18 +824,16 @@ function update(dt){
   if(keys["KeyS"]) dy += 1;
   if(keys["KeyA"]) dx -= 1;
   if(keys["KeyD"]) dx += 1;
-  let l = hypot(dx,dy) || 1;
-  dx/=l; dy/=l;
+  let l=hypot(dx,dy)||1; dx/=l; dy/=l;
 
   // dash
   const dashPressed = keys["ShiftLeft"] || keys["ShiftRight"];
   if(dashPressed && player.dashCd<=0 && (dx!==0||dy!==0)){
-    player.dashCd=1.15;
-    player.dashT=0.18;
+    player.dashCd=1.15; player.dashT=0.18;
     player.invuln=Math.max(player.invuln, 0.22);
     addShake(6,0.06);
     burst(player.x,player.y,"rgba(72,202,228,0.85)", 14, 360, 2.8, 0.35, 14);
-    sfx(520,0.04,0.04,"triangle");
+    sfx(520,0.04,0.035,"triangle");
   }
 
   const sp = player.speed * (player.dashT>0 ? 2.1 : 1.0);
@@ -726,7 +841,6 @@ function update(dt){
   player.y += dy*sp*dt;
   worldClamp();
 
-  // actions
   if(mouse.down) shootPlayer();
   if(keys["Space"]) useUltimate();
 
@@ -736,52 +850,50 @@ function update(dt){
       const d = drones[i];
       d.ang += dt * (1.2 + i*0.05);
       d.shootCd = Math.max(0, d.shootCd - dt);
-      const ox = Math.cos(d.ang) * (player.r+18);
-      const oy = Math.sin(d.ang) * (player.r+18);
+      const ox = Math.cos(d.ang)*(player.r+18);
+      const oy = Math.sin(d.ang)*(player.r+18);
       const x = player.x + ox;
       const y = player.y + oy;
 
-      // drone fires at nearest enemy/boss periodically
       if(d.shootCd<=0){
         d.shootCd = 0.85 - Math.min(0.35, player.wave*0.01);
-        let target = null;
-        let best = 999999;
+        let target=null; let best=999999;
         for(const e of enemies){
-          const dd = (e.x-x)*(e.x-x)+(e.y-y)*(e.y-y);
+          const dd=(e.x-x)*(e.x-x)+(e.y-y)*(e.y-y);
           if(dd<best){ best=dd; target=e; }
         }
-        if(!target && boss) target = boss;
+        if(!target && boss) target=boss;
 
         if(target){
-          const a = Math.atan2(target.y-y, target.x-x);
+          const a=Math.atan2(target.y-y, target.x-x);
           bullets.push({
-            x, y,
-            vx: Math.cos(a)*(player.bulletSpeed*0.9),
-            vy: Math.sin(a)*(player.bulletSpeed*0.9),
-            r: 3.4,
-            life: 0.95,
-            dmg: (player.dmg*0.55) * (1+player.dmgBonus),
-            trail: [],
+            x,y,
+            vx:Math.cos(a)*(player.bulletSpeed*0.9),
+            vy:Math.sin(a)*(player.bulletSpeed*0.9),
+            r:3.4,
+            life:0.95,
+            dmg:(player.dmg*0.55)*(1+player.dmgBonus),
+            trail:[],
             enemy:false,
             pierce:0, ric:0,
-            hitSet: new Set()
+            hitSet:new Set(),
+            splash:0,
+            weapon:"DRONE"
           });
-          // soft sfx rarely
-          if(Math.random()<0.22) sfx(420,0.02,0.018,"triangle");
+          if(Math.random()<0.18) sfx(420,0.02,0.016,"triangle");
         }
       }
     }
   }
 
-  // bullets + trails + wall bounce
+  // bullets movement + trails + ricochet
   for(const b of bullets){
     b.trail.push({x:b.x,y:b.y,life:0.18});
     if(b.trail.length>18) b.trail.shift();
     for(const p of b.trail) p.life -= dt;
     b.trail = b.trail.filter(p=>p.life>0);
 
-    b.x += b.vx*dt;
-    b.y += b.vy*dt;
+    b.x += b.vx*dt; b.y += b.vy*dt;
     b.life -= dt;
 
     if(!b.enemy && b.ric>0){
@@ -790,7 +902,6 @@ function update(dt){
       if(b.x > innerWidth-10){ b.x=innerWidth-10; b.vx=-Math.abs(b.vx); bounced=true; }
       if(b.y < 10){ b.y=10; b.vy=Math.abs(b.vy); bounced=true; }
       if(b.y > innerHeight-10){ b.y=innerHeight-10; b.vy=-Math.abs(b.vy); bounced=true; }
-
       if(bounced){
         b.ric--;
         b.dmg *= 0.92;
@@ -806,18 +917,15 @@ function update(dt){
 
   // enemies AI
   for(const e of enemies){
-    e.hitT = Math.max(0, e.hitT - dt);
+    e.hitT = Math.max(0, (e.hitT||0) - dt);
 
-    // cloaked: reveal when close
     if(e.mod==="cloaked"){
       const d = hypot(player.x-e.x, player.y-e.y);
-      if(d<240) e.cloakT = Math.max(0, e.cloakT - dt*2.0);
-      else e.cloakT = Math.min(1.0, e.cloakT + dt*0.6);
+      if(d<240) e.cloakT = Math.max(0, (e.cloakT||0) - dt*2.0);
+      else e.cloakT = Math.min(1.0, (e.cloakT||0) + dt*0.6);
     }
 
     const ang = Math.atan2(player.y-e.y, player.x-e.x);
-
-    // slow effect (ion slow)
     const slowMul = e.slowT ? (1 - clamp(e.slowT,0,0.6)) : 1;
     if(e.slowT) e.slowT = Math.max(0, e.slowT - dt);
 
@@ -826,22 +934,20 @@ function update(dt){
       e.y += Math.sin(ang)*e.speed*slowMul*dt;
     } else if(e.type==="shooter"){
       const d = hypot(player.x-e.x, player.y-e.y);
-      const desired = 340;
-      const k = clamp((d-desired)/240, -1, 1);
+      const desired = 350;
+      const k = clamp((d-desired)/260, -1, 1);
       e.x += Math.cos(ang)*e.speed*k*slowMul*dt;
       e.y += Math.sin(ang)*e.speed*k*slowMul*dt;
 
       e.shootCd -= dt;
       if(e.shootCd<=0){
-        e.shootCd = rand(0.85,1.35);
-        // shooters can't shoot while cloaked (for fairness)
+        e.shootCd = rand(0.95,1.55);
         if(!(e.mod==="cloaked" && e.cloakT>0.4)){
-          enemyShoot(e.x,e.y, ang, e.dmg*0.75, 520);
+          enemyShoot(e.x,e.y, ang, e.dmg*0.75, 480);
         }
       }
     }
 
-    // touch damage
     if(player.invuln<=0){
       const d = hypot(player.x-e.x, player.y-e.y);
       if(d < player.r + e.r){
@@ -852,13 +958,11 @@ function update(dt){
 
   // boss AI
   if(boss){
-    boss.hitT = Math.max(0, boss.hitT - dt);
+    boss.hitT = Math.max(0, (boss.hitT||0) - dt);
     boss.patternT += dt;
 
-    // enter
     if(boss.y < 160) boss.y += 160*dt;
 
-    // phase logic
     const ratio = boss.hp / boss.maxHp;
     const newPhase = ratio>0.66 ? 1 : (ratio>0.33 ? 2 : 3);
     if(newPhase !== boss.phase){
@@ -866,22 +970,19 @@ function update(dt){
       addShake(12,0.16);
       addHitStop(0.05);
       burst(boss.x,boss.y,"rgba(255,209,102,0.95)", 34, 600, 3.8, 0.60, 20);
-      sfx(90,0.12,0.09,"sawtooth");
+      sfx(90,0.12,0.08,"sawtooth");
     }
 
-    // movement (wide hover)
     const targetX = innerWidth/2 + Math.cos(boss.patternT*0.55)*260;
     const targetY = 190 + Math.sin(boss.patternT*0.7)*70;
     boss.x += (targetX-boss.x)*(0.8*dt);
     boss.y += (targetY-boss.y)*(0.8*dt);
 
-    // patterns
     boss.shootT -= dt;
     boss.dronesT -= dt;
 
     if(boss.dronesT<=0 && boss.phase>=2){
       boss.dronesT = (boss.phase===2) ? 3.2 : 2.6;
-      // spawn elite escorts near boss
       for(let i=0;i<2;i++){
         spawnEnemy("chaser", true);
         const e = enemies[enemies.length-1];
@@ -889,54 +990,49 @@ function update(dt){
         e.y = boss.y + rand(40,120);
       }
       addShake(7,0.08);
-      sfx(150,0.06,0.05,"square");
+      sfx(150,0.06,0.045,"square");
     }
 
     if(boss.shootT<=0){
       if(boss.phase===1){
-        boss.shootT=0.55;
-        // aimed triple
+        boss.shootT=0.62;
         const a = Math.atan2(player.y-boss.y, player.x-boss.x);
-        enemyShoot(boss.x, boss.y, a-0.14, 16+player.wave*0.9, 520);
-        enemyShoot(boss.x, boss.y, a,      16+player.wave*0.9, 520);
-        enemyShoot(boss.x, boss.y, a+0.14, 16+player.wave*0.9, 520);
+        enemyShoot(boss.x, boss.y, a-0.14, 15+player.wave*0.85, 480);
+        enemyShoot(boss.x, boss.y, a,      15+player.wave*0.85, 480);
+        enemyShoot(boss.x, boss.y, a+0.14, 15+player.wave*0.85, 480);
       } else if(boss.phase===2){
-        boss.shootT=0.42;
-        // radial ring
+        boss.shootT=0.48;
         const n=12;
         const base=boss.patternT*0.6;
         for(let i=0;i<n;i++){
           const a = base + i*(Math.PI*2/n);
-          enemyShoot(boss.x, boss.y, a, 14+player.wave*0.8, 500);
+          enemyShoot(boss.x, boss.y, a, 13+player.wave*0.75, 470);
         }
       } else {
-        boss.shootT=0.34;
-        // spiral + aimed
+        boss.shootT=0.40;
         const n=14;
         const base=boss.patternT*1.4;
         for(let i=0;i<n;i++){
           const a = base + i*(Math.PI*2/n);
-          enemyShoot(boss.x, boss.y, a, 13+player.wave*0.75, 520);
+          enemyShoot(boss.x, boss.y, a, 12+player.wave*0.70, 490);
         }
         const a2 = Math.atan2(player.y-boss.y, player.x-boss.x);
-        enemyShoot(boss.x, boss.y, a2, 20+player.wave*1.0, 620);
+        enemyShoot(boss.x, boss.y, a2, 18+player.wave*0.95, 560);
       }
       addShake(5,0.06);
     }
 
-    // contact damage
     if(player.invuln<=0){
       const d = hypot(player.x-boss.x, player.y-boss.y);
       if(d < player.r + boss.r*0.75){
-        hurtPlayer(28+player.wave*1.2);
+        hurtPlayer(26+player.wave*1.1);
       }
     }
   }
 
-  // collisions: bullets -> targets
+  // collisions
   for(const b of bullets){
     if(b.enemy){
-      // enemy bullet hits player
       if(player.invuln<=0){
         const d = hypot(player.x-b.x, player.y-b.y);
         if(d < player.r + b.r){
@@ -948,22 +1044,20 @@ function update(dt){
       continue;
     }
 
-    // player bullet hits enemies
+    // player bullet -> enemies
     for(const e of enemies){
-      if(e.mod==="cloaked" && e.cloakT>0.55) continue; // can't hit fully cloaked
-
+      if(e.mod==="cloaked" && e.cloakT>0.55) continue;
       const d = hypot(e.x-b.x, e.y-b.y);
       if(d < e.r + b.r){
-        // avoid multi-hit same bullet on same target (for trails etc.)
         if(b.hitSet && b.hitSet.has(e)) continue;
         if(b.hitSet) b.hitSet.add(e);
 
         let dmg = b.dmg;
 
         // crit
-        let isCrit = false;
+        let isCrit=false;
         if(Math.random() < player.crit){
-          isCrit = true;
+          isCrit=true;
           dmg *= player.critMul;
         }
 
@@ -973,9 +1067,8 @@ function update(dt){
           e.shield -= take;
           dmg -= take;
           burst(b.x,b.y,"rgba(155,231,255,0.85)", 10, 280, 2.4, 0.30, 16);
-          sfx(300,0.02,0.02,"triangle");
+          sfx(300,0.02,0.018,"triangle");
           if(dmg<=0){
-            // bullet consumed
             if(b.pierce>0){ b.pierce--; b.dmg*=0.92; } else b.life=0;
             break;
           }
@@ -989,7 +1082,7 @@ function update(dt){
           player.hp = Math.min(player.maxHp, player.hp + dmg*player.lifesteal);
         }
 
-        // plasma explosion
+        // plasma
         if(player.plasma>0){
           const radius = 36 + player.plasma*10;
           for(const e2 of enemies){
@@ -1012,12 +1105,12 @@ function update(dt){
           e.slowT = Math.max(e.slowT||0, player.slow);
         }
 
-        // ion chain (on crit or chance)
+        // chain
         if(player.chain>0 && (isCrit || Math.random()<player.chain)){
           let best=null; let bestD=999999;
           for(const e2 of enemies){
             if(e2===e) continue;
-            const dd = (e2.x-e.x)*(e2.x-e.x)+(e2.y-e.y)*(e2.y-e.y);
+            const dd=(e2.x-e.x)*(e2.x-e.x)+(e2.y-e.y)*(e2.y-e.y);
             if(dd<bestD){ bestD=dd; best=e2; }
           }
           if(best && bestD < (220*220)){
@@ -1027,47 +1120,59 @@ function update(dt){
           }
         }
 
-        // feedback
+        // ROCKET splash
+        if(b.splash && b.splash>0){
+          const R = b.splash;
+          for(const e2 of enemies){
+            if(e2===e) continue;
+            const dd = hypot(e2.x-b.x, e2.y-b.y);
+            if(dd < R){
+              e2.hp -= b.dmg * 0.35 * (1 - dd/R);
+              e2.hitT = 0.05;
+            }
+          }
+          if(boss){
+            const dd = hypot(boss.x-b.x, boss.y-b.y);
+            if(dd < R+40) boss.hp -= b.dmg*0.18;
+          }
+          burst(b.x,b.y,"rgba(255,209,102,0.9)", 16, 520, 3.0, 0.45, 18);
+          addShake(6,0.08);
+        }
+
         addShake(3.0,0.05);
         addHitStop(0.02);
         burst(b.x,b.y,"rgba(155,231,255,0.9)", 8, 260, 2.2, 0.26, 14);
-        if(Math.random()<0.22) sfx(240,0.02,0.02,"triangle");
+        if(Math.random()<0.18) sfx(240,0.02,0.018,"triangle");
 
-        // pierce
-        if(b.pierce>0){
-          b.pierce--;
-          b.dmg *= 0.92;
-        } else {
-          b.life=0;
-        }
+        if(b.pierce>0){ b.pierce--; b.dmg*=0.92; }
+        else b.life=0;
+
         break;
       }
     }
 
-    // player bullet hits boss
+    // player bullet -> boss
     if(boss && b.life>0){
       const d = hypot(boss.x-b.x, boss.y-b.y);
       if(d < boss.r + b.r){
         let dmg = b.dmg;
-        if(Math.random() < player.crit) dmg *= player.critMul;
+        if(Math.random()<player.crit) dmg *= player.critMul;
 
         boss.hp -= dmg;
         boss.hitT = 0.08;
 
-        // lifesteal (reduced on boss)
         if(player.lifesteal>0){
           player.hp = Math.min(player.maxHp, player.hp + dmg*player.lifesteal*0.35);
         }
-
-        // plasma
-        if(player.plasma>0){
-          burst(boss.x,boss.y,"rgba(255,209,102,0.7)", 10, 320, 2.4, 0.30, 16);
+        if(b.splash && b.splash>0){
+          burst(b.x,b.y,"rgba(255,209,102,0.9)", 14, 480, 2.8, 0.40, 18);
+          addShake(6,0.08);
         }
 
         addShake(5.5,0.07);
         addHitStop(0.02);
         burst(b.x,b.y,"rgba(255,209,102,0.9)", 10, 300, 2.4, 0.30, 16);
-        sfx(170,0.03,0.03,"square");
+        if(Math.random()<0.9) sfx(170,0.03,0.022,"square");
         b.life=0;
       }
     }
@@ -1092,7 +1197,7 @@ function update(dt){
     }
   }
 
-  // cleanup enemies + splitter behavior
+  // cleanup enemies + splitter
   const newEnemies=[];
   for(const e of enemies){
     if(e.hp>0){ newEnemies.push(e); continue; }
@@ -1100,16 +1205,13 @@ function update(dt){
     player.score += e.value;
     onKill(!!e.elite);
 
-    // death FX
     if(e.elite){
       burst(e.x,e.y,"rgba(255,209,102,0.95)", 30, 620, 3.6, 0.60, 20);
-      sfx(120,0.08,0.06,"sawtooth");
+      sfx(120,0.08,0.05,"sawtooth");
     } else {
       burst(e.x,e.y,"rgba(255,77,109,0.85)", 18, 480, 3.2, 0.50, 16);
-      // no big shake on normal kills
     }
 
-    // splitter: spawn two minis
     if(e.mod==="splitter"){
       for(let i=0;i<2;i++){
         const m = {
@@ -1127,7 +1229,9 @@ function update(dt){
           value: Math.round(e.value*0.45),
           elite: false,
           mod: null,
-          cloakT:0
+          cloakT:0,
+          shield:0, shieldMax:0,
+          slowT:0, shootCd:0
         };
         newEnemies.push(m);
       }
@@ -1143,7 +1247,7 @@ function update(dt){
       setTimeout(()=>{
         addShake(14,0.12);
         burst(boss.x,boss.y,"rgba(255,209,102,0.98)", 50, 800, 4.0, 0.75, 22);
-        sfx(70,0.12,0.10,"sawtooth");
+        sfx(70,0.12,0.08,"sawtooth");
       }, i*90);
     }
     player.score += 400 + player.wave*50;
@@ -1168,20 +1272,18 @@ function update(dt){
     waveClearT += dt;
     if(waveClearT > 0.65){
       waveClearT = 0;
-
-      // upgrade screen
       pickCards();
       state = STATE.UPGRADE;
       sfx(520,0.04,0.03,"triangle");
       addStreakBurst();
+      saveRunCache();
     }
   } else {
     waveClearT = 0;
-
-    // spawn until budget reached
     if(waveState==="fight" && waveSpawned < waveBudget){
       spawnT += dt;
-      const interval = Math.max(0.42, 0.82 - player.wave*0.01); // early faster, later a bit slower
+      // arcade-relaxed: reasonable spawn speed
+      const interval = Math.max(0.44, 0.86 - player.wave*0.008);
       if(spawnT>interval){
         spawnT=0;
         const r=Math.random();
@@ -1202,17 +1304,17 @@ function update(dt){
       player.invuln = 1.2;
       addShake(10,0.12);
       burst(player.x,player.y,"rgba(155,231,255,0.9)", 26, 620, 3.4, 0.70, 22);
-      sfx(320,0.07,0.06,"triangle");
+      sfx(320,0.07,0.05,"triangle");
     } else {
-      // run ends
       save.coins += player.runCoins;
       saveSave();
+      clearRunCache();
       state = STATE.DEAD;
 
       addShake(16,0.20);
       addHitStop(0.10);
       burst(player.x,player.y,"rgba(255,77,109,0.98)", 60, 900, 4.2, 0.75, 22);
-      sfx(60,0.14,0.10,"sawtooth");
+      sfx(60,0.14,0.08,"sawtooth");
     }
   }
 }
@@ -1222,7 +1324,6 @@ function draw(){
   ctx.clearRect(0,0,innerWidth,innerHeight);
   drawSpace();
 
-  // screen shake
   let sx=0, sy=0;
   if(shakeT>0){
     sx=(Math.random()*2-1)*shake;
@@ -1230,11 +1331,9 @@ function draw(){
   }
   ctx.save();
   ctx.translate(sx,sy);
-
-  // glow
   ctx.shadowBlur = 18;
 
-  // ultimate rings
+  // rings
   for(const r of rings){
     const a = clamp(r.life/0.55,0,1);
     ctx.shadowColor="rgba(255,209,102,0.9)";
@@ -1247,10 +1346,10 @@ function draw(){
     ctx.beginPath(); ctx.arc(r.x,r.y,r.r-8,0,Math.PI*2); ctx.stroke();
   }
 
-  // bullet trails
+  // trails
   for(const b of bullets){
     if(!b.trail || b.trail.length<2) continue;
-    const baseA = b.enemy ? 0.26 : 0.36;
+    const baseA = b.enemy ? 0.22 : 0.34;
     ctx.shadowColor = b.enemy ? "rgba(255,77,109,0.9)" : "rgba(155,231,255,0.95)";
     ctx.strokeStyle = b.enemy ? `rgba(255,77,109,${baseA})` : `rgba(155,231,255,${baseA})`;
     ctx.lineWidth = b.enemy ? 3 : 3.5;
@@ -1276,12 +1375,10 @@ function draw(){
 
   // boss
   if(boss){
-    // mothership look
     const a = boss.hitT>0 ? 1 : 0.92;
     ctx.shadowColor="rgba(255,209,102,0.95)";
     ctx.fillStyle=`rgba(255,209,102,${a})`;
 
-    // body (polygon)
     ctx.save();
     ctx.translate(boss.x,boss.y);
     ctx.beginPath();
@@ -1294,21 +1391,17 @@ function draw(){
     ctx.closePath();
     ctx.fill();
 
-    // core
     ctx.shadowBlur=30;
     ctx.shadowColor="rgba(155,231,255,0.7)";
     ctx.fillStyle="rgba(12,18,32,0.95)";
     ctx.beginPath(); ctx.arc(10,0,24,0,Math.PI*2); ctx.fill();
 
-    // cannons
     ctx.shadowBlur=18;
     ctx.shadowColor="rgba(255,77,109,0.8)";
     ctx.fillStyle="rgba(255,77,109,0.9)";
     ctx.fillRect(-10,-58,28,10);
     ctx.fillRect(-10,48,28,10);
-
     ctx.restore();
-    ctx.shadowBlur=18;
 
     // boss hp bar
     const bw = Math.min(560, innerWidth*0.75);
@@ -1325,7 +1418,14 @@ function draw(){
 
   // player ship
   const pAng = Math.atan2(mouse.y-player.y, mouse.x-player.x);
-  drawShip(player.x,player.y, pAng, 1.0, (player.invuln>0?"rgba(108,117,125,0.9)":"rgba(72,202,228,0.95)"), "rgba(72,202,228,0.95)", "rgba(10,22,45,0.85)", true, false);
+  drawShip(
+    player.x,player.y, pAng, 1.0,
+    (player.invuln>0?"rgba(108,117,125,0.9)":"rgba(72,202,228,0.95)"),
+    "rgba(72,202,228,0.95)",
+    "rgba(10,22,45,0.85)",
+    true,
+    false
+  );
 
   // player shield overlay
   if(player.shieldMax>0 && player.shield>0){
@@ -1368,14 +1468,13 @@ function draw(){
 
   ctx.restore();
 
-  // UI (no shake)
+  // HUD
   const pad=16;
 
   // HP bar
   const bw=260, bh=16;
   ctx.fillStyle="rgba(0,0,0,0.55)";
   ctx.fillRect(pad,pad,bw,bh);
-
   const hpW = bw*clamp(player.hp/player.maxHp,0,1);
   const grad = ctx.createLinearGradient(pad,0,pad+bw,0);
   grad.addColorStop(0,"rgba(72,202,228,0.95)");
@@ -1385,7 +1484,7 @@ function draw(){
   ctx.strokeStyle="rgba(72,202,228,0.35)";
   ctx.strokeRect(pad,pad,bw,bh);
 
-  // shield tiny bar
+  // shield bar
   if(player.shieldMax>0){
     const sbw=200, sbh=10;
     ctx.fillStyle="rgba(0,0,0,0.45)";
@@ -1398,40 +1497,44 @@ function draw(){
 
   drawText(`DALGA: ${player.wave}  |  SKOR: ${player.score}`, pad, pad+56, 15, "left", 0.95);
 
-  // combo UI
+  const wpnName = (WEAPONS[player.weapon]||WEAPONS.PULSE).name;
+  drawText(`Silah: ${wpnName}`, pad, pad+76, 13, "left", 0.78);
+
+  // combo
   const comboA = player.comboT>0 ? clamp(player.comboT/2.8,0,1) : 0;
   if(player.combo>0){
-    drawText(`COMBO x${player.combo}  (+${Math.round(player.dmgBonus*100)}% hasar)`, pad, pad+78, 13, "left", 0.85*comboA+0.15);
+    drawText(`COMBO x${player.combo}  (+${Math.round(player.dmgBonus*100)}% hasar)`, pad, pad+96, 13, "left", 0.85*comboA+0.15);
   }
 
   // ult UI
   const u = clamp(1 - (player.ultCd/9.5), 0, 1);
   ctx.fillStyle="rgba(0,0,0,0.45)";
-  ctx.fillRect(pad, pad+90, 180, 12);
+  ctx.fillRect(pad, pad+110, 180, 12);
   ctx.fillStyle="rgba(255,209,102,0.95)";
-  ctx.fillRect(pad, pad+90, 180*u, 12);
+  ctx.fillRect(pad, pad+110, 180*u, 12);
   ctx.strokeStyle="rgba(255,209,102,0.35)";
-  ctx.strokeRect(pad, pad+90, 180, 12);
+  ctx.strokeRect(pad, pad+110, 180, 12);
   ctx.fillStyle="rgba(231,238,249,0.85)";
   ctx.font="12px system-ui, -apple-system, Segoe UI, Roboto, Arial";
-  ctx.fillText(`ULT (Space): ${player.ultCd>0 ? player.ultCd.toFixed(1)+"s" : "READY"}`, pad, pad+114);
+  ctx.textAlign="left";
+  ctx.fillText(`ULT (Space): ${player.ultCd>0 ? player.ultCd.toFixed(1)+"s" : "READY"}`, pad, pad+134);
 
-  // bottom hint
   ctx.fillStyle="rgba(231,238,249,0.68)";
   ctx.font="12px system-ui, -apple-system, Segoe UI, Roboto, Arial";
-  ctx.fillText("WASD • Shift(dash) • Mouse(ateş) • Space(ultimate) • Kart ekranında 1-5 veya tıkla", pad, innerHeight-18);
+  ctx.fillText("WASD • Shift(dash) • Mouse(ateş) • Space(ultimate) • P(pause)", pad, innerHeight-18);
 
   // overlays
   if(state===STATE.MENU) drawMenu();
   if(state===STATE.UPGRADE) drawUpgrade();
+  if(state===STATE.PAUSE) drawPause();
   if(state===STATE.DEAD) drawDead();
 }
 
+/* ---------- UI Screens ---------- */
 function drawMenu(){
   uiButtons = [];
-
   const w = Math.min(760, innerWidth-40);
-  const h = 470;
+  const h = 520;
   const x = (innerWidth-w)/2;
   const y = (innerHeight-h)/2;
 
@@ -1439,21 +1542,33 @@ function drawMenu(){
   drawText("VOIDSTORM ARENA", x+w/2, y+54, 34, "center", 1);
   drawText("Space roguelite • build + skill • Phase 3", x+w/2, y+82, 14, "center", 0.85);
 
-  // start
   const bx=x+26, by=y+110, bw=w-52, bh=56;
+
+  // start
   ctx.fillStyle="rgba(20,28,40,0.92)";
   ctx.fillRect(bx,by,bw,bh);
   ctx.strokeStyle="rgba(72,202,228,0.65)";
   ctx.strokeRect(bx,by,bw,bh);
-  drawText("OYUNA BAŞLA", bx+bw/2, by+38, 20, "center", 1);
+  drawText("YENİ OYUN BAŞLA", bx+bw/2, by+38, 20, "center", 1);
   addBtn("start", bx,by,bw,bh);
 
-  drawText(`Kalıcı Coin: ${save.coins}`, x+26, y+192, 15, "left", 0.95);
+  // continue if cache exists
+  const hasRun = !!sessionStorage.getItem(RUN_KEY);
+  if(hasRun){
+    const by2 = by + 70;
+    ctx.fillStyle="rgba(20,28,40,0.92)";
+    ctx.fillRect(bx,by2,bw,bh);
+    ctx.strokeStyle="rgba(255,209,102,0.65)";
+    ctx.strokeRect(bx,by2,bw,bh);
+    drawText("DEVAM ET", bx+bw/2, by2+38, 20, "center", 1);
+    addBtn("continue", bx,by2,bw,bh);
+  }
 
-  // shop
-  drawText("Kalıcı Upgrade Shop", x+26, y+218, 16, "left", 0.9);
+  drawText(`Kalıcı Coin: ${save.coins}`, x+26, y+208, 15, "left", 0.95);
 
-  const rowY = y+238;
+  drawText("Kalıcı Upgrade Shop", x+26, y+232, 16, "left", 0.9);
+
+  const rowY = y+252;
   const rowH = 54;
   for(let i=0;i<SHOP.length;i++){
     const it = SHOP[i];
@@ -1477,12 +1592,11 @@ function drawMenu(){
     addBtn("buy_"+it.key, rx,ry,rw,rowH);
   }
 
-  drawText("Not: Sesler için ilk tıkla Audio izin verir.", x+w/2, y+h-18, 12, "center", 0.75);
+  drawText("Not: Sesler için ilk tık audio izni verir.", x+w/2, y+h-18, 12, "center", 0.75);
 }
 
 function drawUpgrade(){
   uiButtons = [];
-
   const w = Math.min(920, innerWidth-40);
   const h = 390;
   const x = (innerWidth-w)/2;
@@ -1501,7 +1615,6 @@ function drawUpgrade(){
   for(let i=0;i<cols;i++){
     const c = upgradeCards[i];
     const cx = x+20 + i*(cardW+gap);
-
     const hover = (mouse.x>=cx && mouse.x<=cx+cardW && mouse.y>=cy && mouse.y<=cy+cardH);
     const sel = (i===selectedCard);
 
@@ -1512,19 +1625,36 @@ function drawUpgrade(){
 
     drawText(c.name, cx+cardW/2, cy+46, 17, "center", 0.98);
     drawText(c.desc, cx+cardW/2, cy+78, 13, "center", 0.85);
-
     drawText(`Seç: ${i+1}`, cx+cardW/2, cy+cardH-24, 13, "center", 0.72);
 
     addBtn("card_"+i, cx,cy,cardW,cardH);
   }
 
-  // small stats preview
   drawText(`Run Coin: ${player.runCoins}  •  Kalıcı Coin: ${save.coins}`, x+w/2, y+h-18, 12, "center", 0.75);
+}
+
+function drawPause(){
+  uiButtons = [];
+  const w = Math.min(640, innerWidth-40);
+  const h = 240;
+  const x = (innerWidth-w)/2;
+  const y = (innerHeight-h)/2;
+
+  drawPanel(x,y,w,h);
+  drawText("PAUSE", x+w/2, y+64, 34, "center", 1);
+  drawText("Devam etmek için P", x+w/2, y+100, 15, "center", 0.85);
+
+  const bx=x+26, by=y+130, bw=w-52, bh=56;
+  ctx.fillStyle="rgba(20,28,40,0.92)";
+  ctx.fillRect(bx,by,bw,bh);
+  ctx.strokeStyle="rgba(72,202,228,0.65)";
+  ctx.strokeRect(bx,by,bw,bh);
+  drawText("MENÜYE DÖN", bx+bw/2, by+38, 20, "center", 1);
+  addBtn("pause_menu", bx,by,bw,bh);
 }
 
 function drawDead(){
   uiButtons = [];
-
   const w = Math.min(720, innerWidth-40);
   const h = 300;
   const x = (innerWidth-w)/2;
@@ -1544,7 +1674,7 @@ function drawDead(){
   addBtn("back", bx,by,bw,bh);
 }
 
-/* ---------- Click handling + key selection ---------- */
+/* ---------- UI handling ---------- */
 function handleUI(){
   if(!mouse.clicked) return;
   mouse.clicked=false;
@@ -1554,8 +1684,27 @@ function handleUI(){
 
   if(state===STATE.MENU){
     if(b.id==="start"){
+      clearRunCache();
       resetRun();
       state=STATE.PLAY;
+      return;
+    }
+    if(b.id==="continue"){
+      const ok = loadRunCache();
+      if(ok){
+        if(state===STATE.PAUSE) state=STATE.PLAY;
+        // ensure arrays exist
+        if(!bullets) bullets=[];
+        if(!enemies) enemies=[];
+        if(!particles) particles=[];
+        if(!rings) rings=[];
+        if(!drones) drones=[];
+        saveRunCache();
+      } else {
+        clearRunCache();
+        resetRun();
+        state=STATE.PLAY;
+      }
       return;
     }
     if(b.id.startsWith("buy_")){
@@ -1578,10 +1727,17 @@ function handleUI(){
       const idx = Number(b.id.replace("card_",""));
       selectedCard=idx;
       applyCard(idx);
-
-      // next wave
       state=STATE.PLAY;
       startWave(player.wave+1);
+      saveRunCache();
+      return;
+    }
+  }
+
+  if(state===STATE.PAUSE){
+    if(b.id==="pause_menu"){
+      state=STATE.MENU;
+      saveRunCache();
       return;
     }
   }
@@ -1596,22 +1752,22 @@ function handleUI(){
 
 addEventListener("keydown", (e)=>{
   if(state===STATE.UPGRADE){
-    // 1-5 quick pick
-    const k = e.code;
-    if(k.startsWith("Digit")){
-      const d = Number(k.replace("Digit",""));
+    if(e.code.startsWith("Digit")){
+      const d = Number(e.code.replace("Digit",""));
       const idx = d-1;
       if(idx>=0 && idx<upgradeCards.length){
         selectedCard=idx;
         applyCard(idx);
         state=STATE.PLAY;
         startWave(player.wave+1);
+        saveRunCache();
       }
     }
   }
 });
 
-/* ---------- Main Loop ---------- */
+/* ---------- Main loop ---------- */
+let last=performance.now();
 function frame(now){
   let dt=(now-last)/1000;
   last=now;
@@ -1626,13 +1782,19 @@ function frame(now){
   update(dt);
   draw();
 
+  // autosave every 1s while playing/paused
+  autosaveT += dt;
+  if(autosaveT>1.0){
+    autosaveT=0;
+    saveRunCache();
+  }
+
   requestAnimationFrame(frame);
 }
 
 /* ---------- Boot ---------- */
 startWave(1);
 requestAnimationFrame(frame);
-
 </script>
 </body>
 </html>
